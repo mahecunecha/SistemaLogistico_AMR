@@ -1,0 +1,27 @@
+{
+    "settingsVersion": 1,
+    "enabled": true,
+    "port": 8765,
+    "portConfigured": false,
+    "toolExportProfile": "core",
+    "coreToolsCustom": false,
+    "coreTools": [],
+    "fullToolsCustom": false,
+    "fullTools": [],
+    "selectedConfigTarget": "Antigravity",
+    "executeCodeSafetyChecksEnabled": true,
+    "executeCodeSafetyChecksConfigured": true,
+    "executeCodeStrictFilesystemSafetyEnabled": true,
+    "executeCodeStrictFilesystemSafetyConfigured": true,
+    "executeCodeProjectNamespaceInjectionEnabled": false,
+    "executeCodeProjectNamespaceInjectionConfigured": true,
+    "pluginDebugLoggingEnabled": false,
+    "pluginDebugLoggingConfigured": true,
+    "mcpRecentActivityExpandedByDefault": true,
+    "mcpRecentActivityExpansionConfigured": true,
+    "mcpBrokerModeEnabled": false,
+    "mcpBrokerMonoPath": "",
+    "mcpLastClientConfigKeys": [
+        "Antigravity|funplay-sistemalogistico"
+    ]
+}
