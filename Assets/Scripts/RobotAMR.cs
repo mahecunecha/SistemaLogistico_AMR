@@ -6,7 +6,7 @@ public class RobotAMR : MonoBehaviour
 {
     /* Máquina de Estados Finitos (FSM) para blindar el código contra errores lógicos, enum es una lista restrictiva.
     Le prohíbe a la variable estadoActual tener cualquier otro valor que no sea uno de esos tres.*/
-    public enum EstadoRobot { Inactivo, En_Transito, Extrayendo }
+    public enum EstadoRobot { Inactivo, En_Transito, Extrayendo, Transportando, Interrumpido, Entregando }
     
     [Header("Panel de Control (Solo lectura)")]
     public EstadoRobot estadoActual = EstadoRobot.Inactivo;
@@ -15,7 +15,11 @@ public class RobotAMR : MonoBehaviour
     private NavMeshAgent agente;
     private Pedido pedidoActual; // Conoce la estructura, pero no toda la base de datos
 
-    void Start()
+    [Header("Referencias (LIFO)")]
+    public RobotManagerEVE managerEVE;
+    public Transform zonaTransferencia;
+
+    void Awake()
     {
         agente = GetComponent<NavMeshAgent>();
     }
@@ -53,6 +57,44 @@ public class RobotAMR : MonoBehaviour
         {
             estadoActual = EstadoRobot.Extrayendo;
             Debug.Log("<color=yellow>Destino Alcanzado:</color> Extrayendo estiba de " + pedidoActual.peso_kg + " kg.");
+            StartCoroutine(ProcesoExtraccion());
+        }
+    }
+
+    IEnumerator ProcesoExtraccion()
+    {
+        // Simulación de tiempo de extracción de carga
+        yield return new WaitForSeconds(2f);
+        
+        if (zonaTransferencia != null)
+        {
+            estadoActual = EstadoRobot.Transportando;
+            agente.SetDestination(zonaTransferencia.position);
+            Debug.Log("<color=cyan>AMR Retornando:</color> Llevando estiba a la Zona de Transferencia.");
+        }
+        else
+        {
+            Debug.LogError("AMR Error: Falta asignar la Zona de Transferencia en el Inspector.");
+        }
+    }
+
+    void Update()
+    {
+        if (estadoActual == EstadoRobot.Transportando)
+        {
+            // Chequeo de distancia cuando el robot está retornando
+            if (zonaTransferencia != null && Vector3.Distance(transform.position, zonaTransferencia.position) < 0.5f)
+            {
+                estadoActual = EstadoRobot.Entregando;
+                Debug.Log("<color=magenta>LIFO:</color> Entregando estiba en Zona de Transferencia.");
+                
+                if (managerEVE != null)
+                {
+                    managerEVE.ConfirmarEntregaExitosa();
+                }
+
+                estadoActual = EstadoRobot.Inactivo;
+            }
         }
     }
 }
