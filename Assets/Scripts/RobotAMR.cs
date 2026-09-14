@@ -18,6 +18,7 @@ public class RobotAMR : MonoBehaviour
     [Header("Referencias (LIFO)")]
     public RobotManagerEVE managerEVE;
     public Transform zonaTransferencia;
+    private Transform destinoActual;
 
     void Awake()
     {
@@ -37,27 +38,14 @@ public class RobotAMR : MonoBehaviour
 
         if (destino != null)
         {
+            destinoActual = destino.transform;
             estadoActual = EstadoRobot.En_Transito;
-            agente.SetDestination(destino.transform.position); // Da la orden de moverse
+            agente.SetDestination(destinoActual.position); // Da la orden de moverse
             Debug.Log("<color=cyan>AMR Desplegado:</color> Viajando a " + destino.name + " para buscar " + pedidoActual.codigo_sku);
         }
         else
         {
             Debug.LogError("Alerta Logística: No existe la coordenada " + pedidoActual.coordenada_bodega + " en la bodega física.");
-        }
-    }
-
-    /*Arquitectura orientada a eventos (Gatillo de llegada)
-    OnTriggerEnter es un evento asincrónico. En lugar de tener un bucle saturando 
-    la memoria preguntando en cada frame si el robot ya llegó, el sistema permanece en silencio.*/
-    void OnTriggerEnter(Collider other)
-    {
-        /*Doble Validación: Verifica si chocó, si está en tránsito, y si chocó con el objetivo correcto*/
-        if (estadoActual == EstadoRobot.En_Transito && other.gameObject.name == pedidoActual.coordenada_bodega)
-        {
-            estadoActual = EstadoRobot.Extrayendo;
-            Debug.Log("<color=yellow>Destino Alcanzado:</color> Extrayendo estiba de " + pedidoActual.peso_kg + " kg.");
-            StartCoroutine(ProcesoExtraccion());
         }
     }
 
@@ -80,7 +68,16 @@ public class RobotAMR : MonoBehaviour
 
     void Update()
     {
-        if (estadoActual == EstadoRobot.Transportando)
+        if (estadoActual == EstadoRobot.En_Transito)
+        {
+            if (!agente.pathPending && agente.remainingDistance <= 1.0f)
+            {
+                estadoActual = EstadoRobot.Extrayendo;
+                Debug.Log("<color=yellow>Destino Alcanzado:</color> Extrayendo estiba de " + pedidoActual.peso_kg + " kg.");
+                StartCoroutine(ProcesoExtraccion());
+            }
+        }
+        else if (estadoActual == EstadoRobot.Transportando)
         {
             // Chequeo de distancia cuando el robot está retornando
             if (zonaTransferencia != null && Vector3.Distance(transform.position, zonaTransferencia.position) < 0.5f)

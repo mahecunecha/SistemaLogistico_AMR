@@ -4,13 +4,13 @@
             "id_pallet": "PAL-8492",
             "codigo_sku": "POK-LAT-330",
             "peso_kg": 850.0,
-            "coordenada_bodega": "Trigger_P1_C1"
+            "coordenada_bodega": "P1-C1-F1"
         },
         {
             "id_pallet": "PAL-9102",
             "codigo_sku": "STE-BOT-250",
             "peso_kg": 920.0,
-            "coordenada_bodega": "Trigger_P1_C2"
+            "coordenada_bodega": "P2-C5-F2"
         }
     ]
 }
