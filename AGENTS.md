@@ -1,7 +1,7 @@
 # AGENTS.md
 
 <!-- Funplay Unity MCP managed project skills -->
-<!-- Funplay Unity MCP project skill versions: unity-mcp-workflow@1.0.4, unity-ui-composition@1.0.4 -->
+<!-- Funplay Unity MCP project skill versions: unity-mcp-workflow@1.0.4, unity-ui-composition@1.0.5 -->
 
 # Funplay Unity MCP Project Guidance
 
@@ -10,7 +10,7 @@ This section is managed by Funplay MCP for Unity. Everything between the begin a
 ## Installed project skills
 
 - `funplay-unity-mcp-workflow` v1.0.4 - Efficient workflow for using Unity MCP to edit, import, compile, inspect, and test Unity projects, including screenshot and Game View recording verification.
-- `funplay-unity-ui-composition` v1.0.4 - Build and revise responsive Unity uGUI mobile interfaces, including portrait and landscape layouts, safe areas, prefabs, auto layout, scrolling, text, input, animation, and performance validation.
+- `funplay-unity-ui-composition` v1.0.5 - Build and revise responsive Unity uGUI mobile interfaces, including portrait and landscape layouts, safe areas, prefabs, auto layout, scrolling, text, input, animation, and performance validation.
 
 ## Agent workflow rules
 
@@ -36,7 +36,7 @@ This section is managed by Funplay MCP for Unity. Everything between the begin a
 
 ## Project
 
-- Project root: `/mnt/IgniteDrive/Proyectos_Unity/SistemaLogistico_AMR`
+- Project root: `C:\Users\Aprendiz\Documents\ProyectosUnity\SistemaLogistico_AMR`
 - Product name: `SistemaLogistico_AMR`
 
 ## Notes
