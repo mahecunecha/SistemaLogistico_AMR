@@ -3,11 +3,18 @@ name: funplay-unity-ui-composition
 description: Build and revise responsive Unity uGUI mobile interfaces, including portrait and landscape layouts, safe areas, prefabs, auto layout, scrolling, text, input, animation, and performance validation.
 ---
 <!-- Funplay Unity MCP managed project skills -->
-<!-- Funplay Unity MCP skill version: unity-ui-composition@1.0.5 -->
+<!-- Funplay Unity MCP skill version: unity-ui-composition@1.0.6 -->
 
 # Unity UI Composition
 
 Use this built-in skill when creating, assembling, adapting, reviewing, or fixing Canvas-based Unity UI, especially mobile screen or popup prefabs that must work across aspect ratios, notches, tablets, localization, and runtime state changes.
+
+## MCP-First Unity UI Operations
+
+- Do not use computer use (desktop mouse/keyboard automation) to operate Unity unless necessary. When assembling, modifying, inspecting or validating UI, prefer Unity MCP whenever it can complete the step, including hierarchy/component/prefab reads and edits, compilation/Play state, clicks/scrolling, screenshots and recordings.
+- Check the connected project's tools/list and, when available, `get_tool_capabilities`. A tool missing from exposure, compilation/domain reload or a temporary disconnection is not evidence of a missing capability: check exposure/readiness and recover status first. Respect custom allowlists; do not widen exposure or use another interaction method to bypass restrictions.
+- Prefer specialized MCP tools; for project-specific gaps they do not cover, use a permitted, guarded `execute_code` call through Unity Editor APIs when it can perform the step reliably. Computer use is a fallback only for a confirmed MCP capability gap, or an explicit user request: explain the uncovered step before using it, limit it to that step, and return to MCP readback/validation when available. If recovery fails, report the connection blocker rather than silently switching methods or repeating uncertain mutations.
+- This routing applies to operating Unity, not ordinary source-file editing or viewing supplied design references and already-captured images/videos with appropriate file or media tools.
 
 ## Operating Loop
 
@@ -196,9 +203,20 @@ safeAreaRoot.offsetMax = Vector2.zero;
 - [Sprite Atlas](https://docs.unity3d.com/6000.0/Documentation/Manual/sprite/atlas/create-sprite-atlas.html), [platform texture overrides](https://docs.unity3d.com/6000.0/Documentation/Manual/class-TextureImporter-type-specific.html), and [official uGUI optimization guide](https://learn.unity.com/course/introduction-to-ui-in-unity/tutorial/optimizing-unity-ui)
 
 
+## Structured UI Workflows
+
+- Short MCP tasks briefly wait for completion (wait_seconds defaults to 2; zero returns immediately). For longer tasks use `get_task(data.task.task_id, wait_seconds=20, after_revision=<last revision>)`; it waits for completion or a meaningful state change. Honor poll_after_ms on unchanged responses instead of making the model poll every second. wait_complete is not proof of success: inspect native status, errors and ready/complete/restoration fields. A read_timeout carries only the snapshot_at observation. Cancellation of the HTTP wait does not cancel the task. On lost preparation/preview responses recover through kind + the original request_key; do not replay mutations. Recording and Test Runner starts return immediately, as do preparation/preview starts without a recovery key.
+- Inspect before modifying: use `find_game_objects` with component/property filters and projections, `inspect_ui_sprites` for Image/effective Sprite/importer/border/local-ID associations, and `find_project_types` for exact type and assembly names. Check ambiguity, partial errors, scan completeness and pagination; an incomplete scan is not proof of absence. Component setters distinguish live in-memory readback from saved/reimported prefab values.
+- Run `audit_ui` on relevant live roots or saved prefabs/scenes; small scans can finish in one call, otherwise read status and finding pages through `get_task`. It checks missing borders, missing/required references, transparent raycast blockers, text/clipping and layout conflicts without fixing or saving assets. Review measured evidence and contextual warnings; suppress intentional exceptions only with an explicit project reason. Do not invent border values or infer design fidelity from a clean audit.
+- Before creating new UI, read `get_ui_defaults`. `create_project_ui` can reuse templates and retain their prefab connection, label bindings, font/material and authored geometry. Explicit overrides take precedence; existing template component types are not converted. `configure_ui_defaults` changes project-scoped authoring preferences, so use it only when that shared convention is intended. Tied/incomplete convention scans or missing TMP resources require a deliberate choice/action, never a silent legacy fallback. This is Edit Mode authoring: save the intended scene/prefab explicitly and preserve existing UI when revising it.
+- When preview management is exposed (Full by default), use `start_ui_preview_session` with verified prefab_paths and/or a project scene_template, optionally enter_play_mode and target width/height. It needs saved clean original scenes and no open Prefab Stage; do not save/discard unrelated user work merely to satisfy this precondition. Retain session_id and data.task.task_id; use `get_task` until ready. Business data and initialization remain project-specific; entering the scene may run lifecycle code.
+- End the matching session with `end_ui_preview_session`, then inspect scenes_restored, view_restored, selection_restored, assets_cleaned and warnings. Do not claim full restoration from a success envelope. Changed scene setup, dirty preview or modified temporary scene requires inspection; discard_preview_changes applies only to the owned preview scene and must reflect an intended discard. Network/save-game effects and source asset edits are not rolled back. Preserve user-created files and changed window choices; report recovery still needed.
+- Use screenshot `geometry`, not an unrelated `Screen` size: render size and returned image size can differ. Pass coordinate_space=image_pixels, origin=top_left and a fresh capture_id to click/drag/scroll or `raycast_at_point` when measuring a screenshot. `get_object_screen_bounds` and `get_visual_coordinates` share the mapping. Expired IDs or changed mode/view/scene/camera viewport/render dimensions require a fresh capture, not clamping or guessing. Geometry validity does not prove animated content stayed unchanged.
+
+
 ## Metadata
 
 - Original skill id: `unity-ui-composition`
-- Skill version: `1.0.5`
+- Skill version: `1.0.6`
 - Platform: `antigravity`
 - Source repository: `https://github.com/FunplayAI/funplay-unity-mcp`
