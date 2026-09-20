@@ -41,10 +41,12 @@ public class RobotManagerEVE : MonoBehaviour
             manifiestoActual = JsonUtility.FromJson<Manifiesto>(contenidoJson);
             
             Debug.Log("<color=green>EVE:</color> Manifiesto cargado. Total de pallets: " + manifiestoActual.pedidos.Count);
+            DashboardUI.Instance?.RegistrarLog("EVE: Manifiesto cargado. Total de pallets: " + manifiestoActual.pedidos.Count);
         }
         else
         {
             Debug.LogError("EVE Error crítico: No se encontró el Manifiesto de Carga en la ruta: " + ruta);
+            DashboardUI.Instance?.RegistrarLog("EVE Error: No se encontró el Manifiesto de Carga.");
         }
     }
 
@@ -58,6 +60,7 @@ public class RobotManagerEVE : MonoBehaviour
         else
         {
             Debug.Log("<color=green>Operación Finalizada:</color> Manifiesto Nocturno completado. No hay más pedidos.");
+            DashboardUI.Instance?.RegistrarLog("Operación Finalizada: Manifiesto completado.");
         }
     }
 

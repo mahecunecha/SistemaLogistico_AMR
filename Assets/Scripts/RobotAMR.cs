@@ -42,10 +42,12 @@ public class RobotAMR : MonoBehaviour
             estadoActual = EstadoRobot.En_Transito;
             agente.SetDestination(destinoActual.position); // Da la orden de moverse
             Debug.Log("<color=cyan>AMR Desplegado:</color> Viajando a " + destino.name + " para buscar " + pedidoActual.codigo_sku);
+            DashboardUI.Instance?.RegistrarLog("AMR Desplegado: Viajando a " + destino.name);
         }
         else
         {
             Debug.LogError("Alerta Logística: No existe la coordenada " + pedidoActual.coordenada_bodega + " en la bodega física.");
+            DashboardUI.Instance?.RegistrarLog("Alerta: No existe la coordenada " + pedidoActual.coordenada_bodega);
         }
     }
 
@@ -59,10 +61,12 @@ public class RobotAMR : MonoBehaviour
             estadoActual = EstadoRobot.Transportando;
             agente.SetDestination(zonaTransferencia.position);
             Debug.Log("<color=cyan>AMR Retornando:</color> Llevando estiba a la Zona de Transferencia.");
+            DashboardUI.Instance?.RegistrarLog("AMR Retornando: Llevando estiba a Zona de Transferencia.");
         }
         else
         {
             Debug.LogError("AMR Error: Falta asignar la Zona de Transferencia en el Inspector.");
+            DashboardUI.Instance?.RegistrarLog("AMR Error: Falta Zona de Transferencia.");
         }
     }
 
@@ -74,6 +78,7 @@ public class RobotAMR : MonoBehaviour
             {
                 estadoActual = EstadoRobot.Extrayendo;
                 Debug.Log("<color=yellow>Destino Alcanzado:</color> Extrayendo estiba de " + pedidoActual.peso_kg + " kg.");
+                DashboardUI.Instance?.RegistrarLog("Destino Alcanzado: Extrayendo estiba.");
                 StartCoroutine(ProcesoExtraccion());
             }
         }
@@ -84,6 +89,7 @@ public class RobotAMR : MonoBehaviour
             {
                 estadoActual = EstadoRobot.Entregando;
                 Debug.Log("<color=magenta>LIFO:</color> Entregando estiba en Zona de Transferencia.");
+                DashboardUI.Instance?.RegistrarLog("LIFO: Entregando estiba en Zona de Transferencia.");
                 
                 if (managerEVE != null)
                 {

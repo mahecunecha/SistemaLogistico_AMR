@@ -45,6 +45,7 @@ public class GestorJSON : MonoBehaviour
             manifiestoActual = JsonUtility.FromJson<Manifiesto>(contenidoJson);
             
             Debug.Log("<color=green>Éxito:</color> Manifiesto cargado. Total de pallets a despachar: " + manifiestoActual.pedidos.Count);
+            DashboardUI.Instance?.RegistrarLog("Éxito: Manifiesto cargado. Total de pallets a despachar: " + manifiestoActual.pedidos.Count);
             // Si hay pedidos y el robot está conectado, le enviamos la primera orden (Índice 0)
             if (manifiestoActual.pedidos.Count > 0 && robotEjecutor != null)
             {
@@ -54,6 +55,7 @@ public class GestorJSON : MonoBehaviour
         else
         {
             Debug.LogError("Error crítico: No se encontró el Manifiesto de Carga en la ruta: " + ruta);
+            DashboardUI.Instance?.RegistrarLog("Error crítico: No se encontró el Manifiesto de Carga.");
         }
     }
 }
