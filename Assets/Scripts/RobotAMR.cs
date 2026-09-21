@@ -33,6 +33,14 @@ public class RobotAMR : MonoBehaviour
 
         pedidoActual = nuevoPedido;
         
+        if (pedidoActual.peso_kg > 900)
+        {
+            DashboardUI.Instance?.RegistrarLog("<color=red>ALERTA CRÍTICA: Batería insuficiente para pedido masivo.</color>");
+            estadoActual = EstadoRobot.Interrumpido;
+            agente.isStopped = true;
+            return;
+        }
+
         /*Busca en el mundo 3D el GameObject que se llame exactamente como dice el JSON*/
         GameObject destino = GameObject.Find(pedidoActual.coordenada_bodega);
 

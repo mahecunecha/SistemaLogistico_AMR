@@ -8,6 +8,7 @@ public class Pedido
 {
     /*Variables idénticas en nombre y tipo de dato a las del JSON para facilitar el trabajo entre sistemas*/
     public string id_pallet;
+    public string nombre_producto;
     public string codigo_sku;
     public float peso_kg;
     public string coordenada_bodega;

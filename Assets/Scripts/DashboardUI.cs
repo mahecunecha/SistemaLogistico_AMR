@@ -5,7 +5,8 @@ using System.Collections.Generic;
 public class DashboardUI : MonoBehaviour
 {
     /*Al usar static, le estamos diciendo a Unity: "Esta variable no le pertenece a un objeto individual,
-    le pertenece a la clase globalmente".*/
+    le pertenece a la clase globalmente"
+    Por convención mundial en C#, cuando se hace un Singleton, a la variable que guarda la copia única se le llama Instance.*/
     public static DashboardUI Instance { get; private set; }
 
     [Header("UI Referencias")]
@@ -19,6 +20,8 @@ public class DashboardUI : MonoBehaviour
 
     void Awake()
     {
+        /*Aquí le estamos diciendo: "Si ya existe una instancia de esta clase en la escena,
+         y no soy yo mismo, destrúyeme". Esto evita que Unity cree copias o duplicados.*/
         if (Instance != null && Instance != this)
         {
             Destroy(gameObject);
