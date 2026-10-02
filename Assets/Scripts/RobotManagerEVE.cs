@@ -4,6 +4,8 @@ using System.Collections.Generic;
 
 public class RobotManagerEVE : MonoBehaviour
 {
+    public event System.Action OnMisionEvaluada;
+
     [Header("Waypoints de Vuelo")]
     public Transform[] waypoints;
     public float velocidadVuelo = 5f;
@@ -24,6 +26,7 @@ public class RobotManagerEVE : MonoBehaviour
         if (manifiestoActual != null && manifiestoActual.pedidos.Count > 0 && robotEjecutor != null)
         {
             robotEjecutor.AsignarMision(manifiestoActual.pedidos[indicePedidoActual]);
+            OnMisionEvaluada?.Invoke();
         }
     }
 
@@ -57,6 +60,7 @@ public class RobotManagerEVE : MonoBehaviour
         if (indicePedidoActual < manifiestoActual.pedidos.Count)
         {
             robotEjecutor.AsignarMision(manifiestoActual.pedidos[indicePedidoActual]);
+            OnMisionEvaluada?.Invoke();
         }
         else
         {

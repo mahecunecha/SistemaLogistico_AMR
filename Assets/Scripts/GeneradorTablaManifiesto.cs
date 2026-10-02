@@ -18,6 +18,8 @@ public class GeneradorTablaManifiesto : MonoBehaviour
             Destroy(contenedorFilas.GetChild(i).gameObject);
         }
 
+        DashboardUI.Instance.textosEstadoManifiesto.Clear();
+
         // 2. Crear una fila nueva por cada pedido en el JSON
         foreach (Pedido pedido in pedidosJSON)
         {
@@ -36,6 +38,8 @@ public class GeneradorTablaManifiesto : MonoBehaviour
             // Lógica visual para el estado
             columnas[4].text = "PENDIENTE";
             columnas[4].color = Color.red; // Resalta en rojo para indicar que el robot aún no lo mueve
+            
+            DashboardUI.Instance.textosEstadoManifiesto.Add(columnas[4]);
         }
     }
 }

@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.UI;
 using System.Collections.Generic;
+using TMPro;
 
 public class DashboardUI : MonoBehaviour
 {
@@ -14,6 +15,27 @@ public class DashboardUI : MonoBehaviour
     [SerializeField] private Component textoLogTMP;
     [Tooltip("Asigna aquí el Text heredado si no usas TMPro.")]
     [SerializeField] private Text textoLogLegacy;
+
+    [Header("Telemetría y Manifiesto")]
+    public Image barraBateriaRelleno;
+    public List<TextMeshProUGUI> textosEstadoManifiesto = new List<TextMeshProUGUI>();
+
+    public void ActualizarBateria(float porcentaje)
+    {
+        if (barraBateriaRelleno != null)
+        {
+            barraBateriaRelleno.fillAmount = Mathf.Clamp01(porcentaje);
+        }
+    }
+
+    public void ActualizarEstadoManifiesto(int indice, string nuevoEstado, Color color)
+    {
+        if (indice >= 0 && indice < textosEstadoManifiesto.Count && textosEstadoManifiesto[indice] != null)
+        {
+            textosEstadoManifiesto[indice].text = nuevoEstado;
+            textosEstadoManifiesto[indice].color = color;
+        }
+    }
 
     private Queue<string> logQueue = new Queue<string>();
     private const int MaxLineas = 5;

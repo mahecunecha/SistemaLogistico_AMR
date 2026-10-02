@@ -1049,6 +1049,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   textoLogTMP: {fileID: 0}
   textoLogLegacy: {fileID: 429977}
+  barraBateriaRelleno: {fileID: 1668132833}
+  textosEstadoManifiesto: []
 --- !u!1 &269296858
 GameObject:
   m_ObjectHideFlags: 0
@@ -3483,6 +3485,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 897433169}
+  - component: {fileID: 897433170}
   m_Layer: 0
   m_Name: Director_Cinemachine
   m_TagString: Untagged
@@ -3509,6 +3512,24 @@ Transform:
   - {fileID: 272638263}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &897433170
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 897433168}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fa955a2a5beb9ed42a8ab87944b00541, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  managerEVE: {fileID: 357562028}
+  robotAMR: {fileID: 1230052693}
+  vcam1_Menu: {fileID: 190093176}
+  vcam2_EVE: {fileID: 1401109611}
+  vcam3_AMR_Hombro: {fileID: 542420399}
+  vcam4_Emergencia: {fileID: 272638264}
 --- !u!1 &914200448
 GameObject:
   m_ObjectHideFlags: 0
@@ -4886,6 +4907,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a904ba43c8edac9fc8a5d87f79ae0ff5, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  bateriaActual: 100
+  coeficienteVacio: 0.05
+  coeficienteCarga: 0.1
   estadoActual: 0
   managerEVE: {fileID: 357562028}
   zonaTransferencia: {fileID: 776493299}
