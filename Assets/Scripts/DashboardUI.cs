@@ -23,6 +23,15 @@ public class DashboardUI : MonoBehaviour
     [Header("Alertas")]
     public GameObject panelEmergencia;
 
+    [Header("Módulos")]
+    [SerializeField] private GameObject panelMenuModulos;
+
+    public void IniciarTurnoNocturno()
+    {
+        if (panelMenuModulos != null) panelMenuModulos.SetActive(false);
+        RegistrarLog("<color=green>[SISTEMA]:</color> Módulo 4 iniciado por supervisor.");
+    }
+
     public void MostrarEmergencia(bool mostrar)
     {
         if (panelEmergencia != null)
