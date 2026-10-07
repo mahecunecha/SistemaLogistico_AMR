@@ -15,6 +15,10 @@ public class RobotAMR : MonoBehaviour
     public float coeficienteVacio = 0.05f;
     public float coeficienteCarga = 0.1f;
 
+    private float velocidadBase = 3.5f;
+    private float aceleracionBase = 8.0f;
+    private float coeficientePeso = 0.002f;
+
     [Header("Panel de Control (Solo lectura)")]
     public EstadoRobot estadoActual = EstadoRobot.Inactivo;
     /*El NavMeshAgent es el motor físico de Unity. Pero nota la variable Pedido. Tu cilindro físico no conoce el archivo JSON completo ni le interesa.
@@ -43,9 +47,10 @@ public class RobotAMR : MonoBehaviour
         if (pedidoActual.peso_kg > 900)
         {
             DashboardUI.Instance?.RegistrarLog("<color=red>ALERTA CRÍTICA: Batería insuficiente para pedido masivo.</color>");
+            DashboardUI.Instance?.MostrarEmergencia(true);
             estadoActual = EstadoRobot.Interrumpido;
             OnEstadoCambiado?.Invoke(estadoActual);
-            agente.isStopped = true;
+            if (agente != null) agente.isStopped = true;
             return;
         }
 
@@ -58,6 +63,10 @@ public class RobotAMR : MonoBehaviour
             destinoActual = destino.transform;
             estadoActual = EstadoRobot.En_Transito;
             OnEstadoCambiado?.Invoke(estadoActual);
+
+            agente.speed = velocidadBase;
+            agente.acceleration = aceleracionBase;
+
             agente.SetDestination(destinoActual.position); // Da la orden de moverse
             Debug.Log("<color=cyan>AMR Desplegado:</color> Viajando a " + destino.name + " para buscar " + pedidoActual.codigo_sku);
             DashboardUI.Instance?.RegistrarLog("AMR Desplegado: Viajando a " + destino.name);
@@ -69,6 +78,21 @@ public class RobotAMR : MonoBehaviour
         }
     }
 
+    public void EjecutarOverride()
+    {
+        estadoActual = EstadoRobot.En_Transito;
+        if (agente != null) agente.isStopped = false;
+        
+        GameObject destino = GameObject.Find(pedidoActual.coordenada_bodega);
+        if (destino != null)
+        {
+            agente.SetDestination(destino.transform.position);
+        }
+        
+        OnEstadoCambiado?.Invoke(estadoActual);
+        DashboardUI.Instance?.RegistrarLog("<color=magenta>OVERRIDE ACEPTADO: Riesgo asumido. AMR forzado a continuar.</color>");
+    }
+
     IEnumerator ProcesoExtraccion()
     {
         // Simulación de tiempo de extracción de carga
@@ -78,6 +102,10 @@ public class RobotAMR : MonoBehaviour
         {
             estadoActual = EstadoRobot.Transportando;
             OnEstadoCambiado?.Invoke(estadoActual);
+
+            agente.speed = Mathf.Max(0.5f, velocidadBase - (pedidoActual.peso_kg * coeficientePeso));
+            agente.acceleration = Mathf.Max(1.0f, aceleracionBase - (pedidoActual.peso_kg * coeficientePeso * 2f));
+
             agente.SetDestination(zonaTransferencia.position);
             Debug.Log("<color=cyan>AMR Retornando:</color> Llevando estiba a la Zona de Transferencia.");
             DashboardUI.Instance?.RegistrarLog("AMR Retornando: Llevando estiba a Zona de Transferencia.");
@@ -89,8 +117,37 @@ public class RobotAMR : MonoBehaviour
         }
     }
 
+    private void DibujarSensoresLiDAR()
+    {
+        Vector3 origen = transform.position + Vector3.up * 0.5f;
+        float distancia = 4f;
+
+        // Frente
+        Vector3 dirFrente = transform.forward;
+        if (Physics.Raycast(origen, dirFrente, out RaycastHit hitFrente, distancia))
+            Debug.DrawLine(origen, hitFrente.point, Color.red);
+        else
+            Debug.DrawRay(origen, dirFrente * distancia, Color.cyan);
+
+        // Izquierda (-15 grados)
+        Vector3 dirIzquierda = Quaternion.Euler(0, -15, 0) * transform.forward;
+        if (Physics.Raycast(origen, dirIzquierda, out RaycastHit hitIzquierda, distancia))
+            Debug.DrawLine(origen, hitIzquierda.point, Color.red);
+        else
+            Debug.DrawRay(origen, dirIzquierda * distancia, Color.cyan);
+
+        // Derecha (+15 grados)
+        Vector3 dirDerecha = Quaternion.Euler(0, 15, 0) * transform.forward;
+        if (Physics.Raycast(origen, dirDerecha, out RaycastHit hitDerecha, distancia))
+            Debug.DrawLine(origen, hitDerecha.point, Color.red);
+        else
+            Debug.DrawRay(origen, dirDerecha * distancia, Color.cyan);
+    }
+
     void Update()
     {
+        DibujarSensoresLiDAR();
+
         // Matemáticas de Batería (Happy Path)
         if (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando)
         {
@@ -128,13 +185,16 @@ public class RobotAMR : MonoBehaviour
                 Debug.Log("<color=magenta>LIFO:</color> Entregando estiba en Zona de Transferencia.");
                 DashboardUI.Instance?.RegistrarLog("LIFO: Entregando estiba en Zona de Transferencia.");
                 
+                estadoActual = EstadoRobot.Inactivo;
+                OnEstadoCambiado?.Invoke(estadoActual);
+
+                agente.speed = velocidadBase;
+                agente.acceleration = aceleracionBase;
+
                 if (managerEVE != null)
                 {
                     managerEVE.ConfirmarEntregaExitosa();
                 }
-
-                estadoActual = EstadoRobot.Inactivo;
-                OnEstadoCambiado?.Invoke(estadoActual);
             }
         }
     }

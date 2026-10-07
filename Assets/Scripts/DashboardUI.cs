@@ -20,6 +20,27 @@ public class DashboardUI : MonoBehaviour
     public Image barraBateriaRelleno;
     public List<TextMeshProUGUI> textosEstadoManifiesto = new List<TextMeshProUGUI>();
 
+    [Header("Alertas")]
+    public GameObject panelEmergencia;
+
+    public void MostrarEmergencia(bool mostrar)
+    {
+        if (panelEmergencia != null)
+        {
+            panelEmergencia.SetActive(mostrar);
+        }
+    }
+
+    public void OnOverridePresionado()
+    {
+        MostrarEmergencia(false);
+        RobotAMR robot = UnityEngine.Object.FindObjectOfType<RobotAMR>();
+        if (robot != null)
+        {
+            robot.EjecutarOverride();
+        }
+    }
+
     public void ActualizarBateria(float porcentaje)
     {
         if (barraBateriaRelleno != null)
