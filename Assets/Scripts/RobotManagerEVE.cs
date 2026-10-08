@@ -15,6 +15,7 @@ public class RobotManagerEVE : MonoBehaviour
     public Manifiesto manifiestoActual;
     public RobotAMR robotEjecutor;
     public int indicePedidoActual = 0;
+    public bool turnoIniciado = false;
 
     void Awake()
     {
@@ -23,16 +24,24 @@ public class RobotManagerEVE : MonoBehaviour
 
     void Start()
     {
-        if (manifiestoActual != null && manifiestoActual.pedidos.Count > 0 && robotEjecutor != null)
-        {
-            robotEjecutor.AsignarMision(manifiestoActual.pedidos[indicePedidoActual]);
-            OnMisionEvaluada?.Invoke();
-        }
     }
 
     void Update()
     {
+        if (!turnoIniciado) return;
         MoverPorWaypoints();
+    }
+
+    public void IniciarTurno()
+    {
+        if (turnoIniciado) return;
+        turnoIniciado = true;
+
+        if (manifiestoActual != null && manifiestoActual.pedidos.Count > 0 && robotEjecutor != null)
+        {
+            robotEjecutor.AsignarMision(manifiestoActual.pedidos[indicePedidoActual]);
+        }
+        DashboardUI.Instance?.RegistrarLog("<color=green>[WMS]:</color> Turno de despacho nocturno iniciado.");
     }
 
     void CargarManifiesto()

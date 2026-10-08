@@ -29,6 +29,11 @@ public class DashboardUI : MonoBehaviour
     public void IniciarTurnoNocturno()
     {
         if (panelMenuModulos != null) panelMenuModulos.SetActive(false);
+        
+        GameObject menuPrincipal = GameObject.Find("Canvas_MenuPrincipal");
+        if (menuPrincipal != null) menuPrincipal.SetActive(false);
+
+        FindObjectOfType<RobotManagerEVE>()?.IniciarTurno();
         RegistrarLog("<color=green>[SISTEMA]:</color> Módulo 4 iniciado por supervisor.");
     }
 
