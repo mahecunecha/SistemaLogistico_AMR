@@ -14,6 +14,10 @@ public class RobotAMR : MonoBehaviour
     public float bateriaActual = 100f;
     public float coeficienteVacio = 0.05f;
     public float coeficienteCarga = 0.1f;
+    public float consumoIdle = 0.01f;
+
+    [Header("Sensores")]
+    public LayerMask capaObstaculos;
 
     private float velocidadBase = 3.5f;
     private float aceleracionBase = 8.0f;
@@ -36,7 +40,7 @@ public class RobotAMR : MonoBehaviour
         agente = GetComponent<NavMeshAgent>();
     }
 
-    public void AsignarMision(Pedido nuevoPedido)
+    public void AsignarMision(Pedido nuevoPedido, Transform destinoFisico)
     {
         /* Regla de seguridad: Solo acepta misiones si está inactivo
         el return funciona como una pared que protege a la mision actual*/
@@ -54,13 +58,10 @@ public class RobotAMR : MonoBehaviour
             return;
         }
 
-        /*Busca en el mundo 3D el GameObject que se llame exactamente como dice el JSON*/
-        GameObject destino = GameObject.Find(pedidoActual.coordenada_bodega);
-
-        if (destino != null)
+        if (destinoFisico != null)
         {
             DashboardUI.Instance?.ActualizarEstadoManifiesto(managerEVE.indicePedidoActual, "EN TRÁNSITO", Color.yellow);
-            destinoActual = destino.transform;
+            destinoActual = destinoFisico;
             estadoActual = EstadoRobot.En_Transito;
             OnEstadoCambiado?.Invoke(estadoActual);
 
@@ -68,13 +69,13 @@ public class RobotAMR : MonoBehaviour
             agente.acceleration = aceleracionBase;
 
             agente.SetDestination(destinoActual.position); // Da la orden de moverse
-            Debug.Log("<color=cyan>AMR Desplegado:</color> Viajando a " + destino.name + " para buscar " + pedidoActual.codigo_sku);
-            DashboardUI.Instance?.RegistrarLog("AMR Desplegado: Viajando a " + destino.name);
+            Debug.Log("<color=cyan>AMR Desplegado:</color> Viajando a " + destinoFisico.name + " para buscar " + pedidoActual.codigo_sku);
+            DashboardUI.Instance?.RegistrarLog("AMR Desplegado: Viajando a " + destinoFisico.name);
         }
         else
         {
-            Debug.LogError("Alerta Logística: No existe la coordenada " + pedidoActual.coordenada_bodega + " en la bodega física.");
-            DashboardUI.Instance?.RegistrarLog("Alerta: No existe la coordenada " + pedidoActual.coordenada_bodega);
+            Debug.LogError("Alerta Logística: Coordenada nula recibida para " + pedidoActual.coordenada_bodega);
+            DashboardUI.Instance?.RegistrarLog("Alerta: Coordenada nula recibida.");
         }
     }
 
@@ -83,10 +84,9 @@ public class RobotAMR : MonoBehaviour
         estadoActual = EstadoRobot.En_Transito;
         if (agente != null) agente.isStopped = false;
         
-        GameObject destino = GameObject.Find(pedidoActual.coordenada_bodega);
-        if (destino != null)
+        if (destinoActual != null)
         {
-            agente.SetDestination(destino.transform.position);
+            agente.SetDestination(destinoActual.position);
         }
         
         OnEstadoCambiado?.Invoke(estadoActual);
@@ -124,21 +124,21 @@ public class RobotAMR : MonoBehaviour
 
         // Frente
         Vector3 dirFrente = transform.forward;
-        if (Physics.Raycast(origen, dirFrente, out RaycastHit hitFrente, distancia))
+        if (Physics.Raycast(origen, dirFrente, out RaycastHit hitFrente, distancia, capaObstaculos))
             Debug.DrawLine(origen, hitFrente.point, Color.red);
         else
             Debug.DrawRay(origen, dirFrente * distancia, Color.cyan);
 
         // Izquierda (-15 grados)
         Vector3 dirIzquierda = Quaternion.Euler(0, -15, 0) * transform.forward;
-        if (Physics.Raycast(origen, dirIzquierda, out RaycastHit hitIzquierda, distancia))
+        if (Physics.Raycast(origen, dirIzquierda, out RaycastHit hitIzquierda, distancia, capaObstaculos))
             Debug.DrawLine(origen, hitIzquierda.point, Color.red);
         else
             Debug.DrawRay(origen, dirIzquierda * distancia, Color.cyan);
 
         // Derecha (+15 grados)
         Vector3 dirDerecha = Quaternion.Euler(0, 15, 0) * transform.forward;
-        if (Physics.Raycast(origen, dirDerecha, out RaycastHit hitDerecha, distancia))
+        if (Physics.Raycast(origen, dirDerecha, out RaycastHit hitDerecha, distancia, capaObstaculos))
             Debug.DrawLine(origen, hitDerecha.point, Color.red);
         else
             Debug.DrawRay(origen, dirDerecha * distancia, Color.cyan);
@@ -146,7 +146,13 @@ public class RobotAMR : MonoBehaviour
 
     void Update()
     {
-        DibujarSensoresLiDAR();
+        if (Time.frameCount % 5 == 0)
+        {
+            DibujarSensoresLiDAR();
+        }
+
+        // Consumo pasivo obligatorio por encendido de sistemas lógicos
+        bateriaActual -= consumoIdle * Time.deltaTime;
 
         // Matemáticas de Batería (Happy Path)
         if (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando)
@@ -159,9 +165,9 @@ public class RobotAMR : MonoBehaviour
                               distanciaRecorrida * coeficienteCarga * (pedidoActual.peso_kg / 100f);
                 
                 bateriaActual -= gasto;
-                DashboardUI.Instance?.ActualizarBateria(bateriaActual / 100f);
             }
         }
+        DashboardUI.Instance?.ActualizarBateria(bateriaActual / 100f);
 
         if (estadoActual == EstadoRobot.En_Transito)
         {

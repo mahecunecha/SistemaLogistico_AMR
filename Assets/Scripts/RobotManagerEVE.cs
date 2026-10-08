@@ -16,6 +16,7 @@ public class RobotManagerEVE : MonoBehaviour
     public RobotAMR robotEjecutor;
     public int indicePedidoActual = 0;
     public bool turnoIniciado = false;
+    private Dictionary<string, Transform> directorioBodega = new Dictionary<string, Transform>();
 
     void Awake()
     {
@@ -39,7 +40,9 @@ public class RobotManagerEVE : MonoBehaviour
 
         if (manifiestoActual != null && manifiestoActual.pedidos.Count > 0 && robotEjecutor != null)
         {
-            robotEjecutor.AsignarMision(manifiestoActual.pedidos[indicePedidoActual]);
+            var pedido = manifiestoActual.pedidos[indicePedidoActual];
+            directorioBodega.TryGetValue(pedido.coordenada_bodega, out Transform destino);
+            robotEjecutor.AsignarMision(pedido, destino);
         }
         DashboardUI.Instance?.RegistrarLog("<color=green>[WMS]:</color> Turno de despacho nocturno iniciado.");
     }
@@ -52,6 +55,16 @@ public class RobotManagerEVE : MonoBehaviour
             string contenidoJson = File.ReadAllText(ruta);
             manifiestoActual = JsonUtility.FromJson<Manifiesto>(contenidoJson);
             
+            directorioBodega.Clear();
+            foreach(var pedido in manifiestoActual.pedidos)
+            {
+                if (!directorioBodega.ContainsKey(pedido.coordenada_bodega))
+                {
+                    GameObject destino = GameObject.Find(pedido.coordenada_bodega);
+                    if (destino != null) directorioBodega.Add(pedido.coordenada_bodega, destino.transform);
+                }
+            }
+
             Debug.Log("<color=green>EVE:</color> Manifiesto cargado. Total de pallets: " + manifiestoActual.pedidos.Count);
             DashboardUI.Instance?.RegistrarLog("EVE: Manifiesto cargado. Total de pallets: " + manifiestoActual.pedidos.Count);
             FindObjectOfType<GeneradorTablaManifiesto>()?.PoblarTabla(manifiestoActual.pedidos);
@@ -68,7 +81,9 @@ public class RobotManagerEVE : MonoBehaviour
         indicePedidoActual++;
         if (indicePedidoActual < manifiestoActual.pedidos.Count)
         {
-            robotEjecutor.AsignarMision(manifiestoActual.pedidos[indicePedidoActual]);
+            var pedido = manifiestoActual.pedidos[indicePedidoActual];
+            directorioBodega.TryGetValue(pedido.coordenada_bodega, out Transform destino);
+            robotEjecutor.AsignarMision(pedido, destino);
             OnMisionEvaluada?.Invoke();
         }
         else

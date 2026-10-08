@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.UI;
 using System.Collections.Generic;
 using TMPro;
+using System.Text;
 
 public class DashboardUI : MonoBehaviour
 {
@@ -74,6 +75,7 @@ public class DashboardUI : MonoBehaviour
 
     private Queue<string> logQueue = new Queue<string>();
     private const int MaxLineas = 5;
+    private StringBuilder stringBuilderLog = new StringBuilder(250);
 
     void Awake()
     {
@@ -85,6 +87,14 @@ public class DashboardUI : MonoBehaviour
             return;
         }
         Instance = this;
+    }
+
+    void OnDestroy()
+    {
+        if (Instance == this)
+        {
+            Instance = null;
+        }
     }
 
     public void RegistrarLog(string mensaje)
@@ -104,7 +114,12 @@ public class DashboardUI : MonoBehaviour
 
     private void ActualizarVisual()
     {
-        string contenido = string.Join("\n", logQueue);
+        stringBuilderLog.Clear();
+        foreach (var log in logQueue)
+        {
+            stringBuilderLog.AppendLine(log);
+        }
+        string contenido = stringBuilderLog.ToString();
         
         if (textoLogTMP != null)
         {

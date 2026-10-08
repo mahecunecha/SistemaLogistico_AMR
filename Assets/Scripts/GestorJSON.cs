@@ -50,7 +50,9 @@ public class GestorJSON : MonoBehaviour
             // Si hay pedidos y el robot está conectado, le enviamos la primera orden (Índice 0)
             if (manifiestoActual.pedidos.Count > 0 && robotEjecutor != null)
             {
-                robotEjecutor.AsignarMision(manifiestoActual.pedidos[0]);
+                var pedido = manifiestoActual.pedidos[0];
+                GameObject destino = GameObject.Find(pedido.coordenada_bodega);
+                robotEjecutor.AsignarMision(pedido, destino != null ? destino.transform : null);
             }
         }
         else
