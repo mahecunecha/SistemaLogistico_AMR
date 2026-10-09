@@ -10,6 +10,8 @@ public class RobotManagerEVE : MonoBehaviour
     public Transform[] waypoints;
     public float velocidadVuelo = 5f;
     private int indiceWaypointActual = 0;
+    private Vector3 velocidadActualEVE;
+    private float smoothTime = 0.6f;
 
     [Header("Base de Datos Local")]
     public Manifiesto manifiestoActual;
@@ -102,9 +104,16 @@ public class RobotManagerEVE : MonoBehaviour
         /*En Unity, la palabra transform (con "t" minúscula) es una variable nativa e invisible
         que el motor le otorga automáticamente a todos los scripts que heredan de MonoBehaviour.
         No necesitas declararla en tu código porque ya existe en el núcleo del sistema.*/
-        transform.position = Vector3.MoveTowards(transform.position, destino.position, velocidadVuelo * Time.deltaTime);
+        transform.position = Vector3.SmoothDamp(transform.position, destino.position, ref velocidadActualEVE, smoothTime, velocidadVuelo);
+        
+        Vector3 direccion = (destino.position - transform.position).normalized;
+        if (direccion != Vector3.zero)
+        {
+            Quaternion rotacionObjetivo = Quaternion.LookRotation(direccion);
+            transform.rotation = Quaternion.Slerp(transform.rotation, rotacionObjetivo, Time.deltaTime * 3f);
+        }
 
-        if (Vector3.Distance(transform.position, destino.position) < 0.1f)
+        if (Vector3.Distance(transform.position, destino.position) < 0.5f)
         {
             indiceWaypointActual = (indiceWaypointActual + 1) % waypoints.Length;
         }

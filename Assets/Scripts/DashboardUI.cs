@@ -23,6 +23,8 @@ public class DashboardUI : MonoBehaviour
 
     [Header("Alertas")]
     public GameObject panelEmergencia;
+    [Tooltip("Asigna aquí el texto del detalle de emergencia (TMP o Legacy).")]
+    [SerializeField] private Component textoDetalleEmergencia;
 
     [Header("Módulos")]
     [SerializeField] private GameObject panelMenuModulos;
@@ -43,6 +45,26 @@ public class DashboardUI : MonoBehaviour
         if (panelEmergencia != null)
         {
             panelEmergencia.SetActive(mostrar);
+        }
+    }
+
+    public void MostrarEmergencia(bool mostrar, float bateriaProyectada, float varianzaMargen = 3.2f)
+    {
+        MostrarEmergencia(mostrar);
+        
+        if (mostrar && textoDetalleEmergencia != null)
+        {
+            string mensaje = $"ALERTA PREDICTIVA DE RIESGO OPERATIVO\n\nBatería proyectada al retorno: {bateriaProyectada:F1}% (± {varianzaMargen:F1}% varianza térmica)\nLímite seguro de celda: 15.0%\n\nEvaluación: Detención preventiva por riesgo de descarga profunda en tránsito.";
+            
+            var prop = textoDetalleEmergencia.GetType().GetProperty("text");
+            if (prop != null)
+            {
+                prop.SetValue(textoDetalleEmergencia, mensaje);
+            }
+            else if (textoDetalleEmergencia is Text legacyText)
+            {
+                legacyText.text = mensaje;
+            }
         }
     }
 

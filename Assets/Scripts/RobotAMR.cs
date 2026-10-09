@@ -29,6 +29,7 @@ public class RobotAMR : MonoBehaviour
     Solo conoce la estructura de un pedido aislado que le entrega el Gestor, manteniendo el código limpio y modular.*/
     private NavMeshAgent agente;
     private Pedido pedidoActual; // Conoce la estructura, pero no toda la base de datos
+    private bool modoDegradacionActivo = false;
 
     [Header("Referencias (LIFO)")]
     public RobotManagerEVE managerEVE;
@@ -40,6 +41,25 @@ public class RobotAMR : MonoBehaviour
         agente = GetComponent<NavMeshAgent>();
     }
 
+    private bool CalcularViabilidadOperativa(Pedido pedido, Transform destino, out float bateriaRestanteEstimada)
+    {
+        float distanciaIda = Vector3.Distance(transform.position, destino.position);
+        float distanciaVuelta = 0f;
+        if (zonaTransferencia != null)
+        {
+            distanciaVuelta = Vector3.Distance(destino.position, zonaTransferencia.position);
+        }
+
+        // Proyección del consumo: ida vacío + vuelta cargado con ruido térmico máximo (1.15f)
+        float gastoIda = distanciaIda * coeficienteVacio;
+        float gastoVuelta = distanciaVuelta * coeficienteCarga * (pedido.peso_kg / 100f) * 1.15f;
+        float gastoProyectadoTotal = gastoIda + gastoVuelta;
+
+        bateriaRestanteEstimada = bateriaActual - gastoProyectadoTotal;
+
+        return bateriaRestanteEstimada >= 15.0f;
+    }
+
     public void AsignarMision(Pedido nuevoPedido, Transform destinoFisico)
     {
         /* Regla de seguridad: Solo acepta misiones si está inactivo
@@ -48,10 +68,10 @@ public class RobotAMR : MonoBehaviour
 
         pedidoActual = nuevoPedido;
         
-        if (pedidoActual.peso_kg > 900)
+        if (!CalcularViabilidadOperativa(pedidoActual, destinoFisico, out float bateriaProyectada))
         {
-            DashboardUI.Instance?.RegistrarLog("<color=red>ALERTA CRÍTICA: Batería insuficiente para pedido masivo.</color>");
-            DashboardUI.Instance?.MostrarEmergencia(true);
+            DashboardUI.Instance?.RegistrarLog($"<color=red>[ALERTA PREDICTIVA] Misión inviable. Retorno proyectado: {bateriaProyectada:F1}% (Umbral crítico: 15%). Detención preventiva.</color>");
+            DashboardUI.Instance?.MostrarEmergencia(true, bateriaProyectada, 3.2f);
             estadoActual = EstadoRobot.Interrumpido;
             OnEstadoCambiado?.Invoke(estadoActual);
             if (agente != null) agente.isStopped = true;
@@ -81,22 +101,28 @@ public class RobotAMR : MonoBehaviour
 
     public void EjecutarOverride()
     {
+        DashboardUI.Instance?.MostrarEmergencia(false);
         estadoActual = EstadoRobot.En_Transito;
         if (agente != null) agente.isStopped = false;
         
+        modoDegradacionActivo = true;
+        if (agente != null) agente.acceleration = Mathf.Max(1.0f, agente.acceleration * 0.5f);
+        coeficienteCarga *= 1.3f;
+
         if (destinoActual != null)
         {
             agente.SetDestination(destinoActual.position);
         }
         
         OnEstadoCambiado?.Invoke(estadoActual);
-        DashboardUI.Instance?.RegistrarLog("<color=magenta>OVERRIDE ACEPTADO: Riesgo asumido. AMR forzado a continuar.</color>");
+        DashboardUI.Instance?.RegistrarLog("<color=orange>[OVERRIDE EJECUTADO] Protocolo de contingencia forzado. Modo de degradación térmica activo: Aceleración -50%, Consumo +30%.</color>");
     }
 
     IEnumerator ProcesoExtraccion()
     {
-        // Simulación de tiempo de extracción de carga
-        yield return new WaitForSeconds(2f);
+        // Simulación de tiempo de extracción de carga calculada por hardware
+        float tiempoExtraccion = Mathf.Lerp(1.2f, 3.8f, pedidoActual.peso_kg / 1000f) + Random.Range(-0.2f, 0.2f);
+        yield return new WaitForSeconds(tiempoExtraccion);
         
         if (zonaTransferencia != null)
         {
@@ -154,15 +180,23 @@ public class RobotAMR : MonoBehaviour
         // Consumo pasivo obligatorio por encendido de sistemas lógicos
         bateriaActual -= consumoIdle * Time.deltaTime;
 
-        // Matemáticas de Batería (Happy Path)
+        // Matemáticas de Batería (Termodinámica Inyectada)
         if (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando)
         {
             float distanciaRecorrida = agente.velocity.magnitude * Time.deltaTime;
             if (distanciaRecorrida > 0)
             {
-                float gasto = estadoActual == EstadoRobot.En_Transito ? 
-                              distanciaRecorrida * coeficienteVacio : 
-                              distanciaRecorrida * coeficienteCarga * (pedidoActual.peso_kg / 100f);
+                float gasto = 0f;
+                if (estadoActual == EstadoRobot.En_Transito)
+                {
+                    gasto = distanciaRecorrida * coeficienteVacio;
+                }
+                else if (estadoActual == EstadoRobot.Transportando)
+                {
+                    // Inyección de Ruido Termodinámico: Oscilación orgánica (Perlin Noise) para fricción e ineficiencia de motor (0.98 a 1.15)
+                    float factorDeRuido = Mathf.Lerp(0.98f, 1.15f, Mathf.PerlinNoise(Time.time * 0.5f, 0f));
+                    gasto = distanciaRecorrida * coeficienteCarga * (pedidoActual.peso_kg / 100f) * factorDeRuido;
+                }
                 
                 bateriaActual -= gasto;
             }
@@ -195,7 +229,14 @@ public class RobotAMR : MonoBehaviour
                 OnEstadoCambiado?.Invoke(estadoActual);
 
                 agente.speed = velocidadBase;
-                agente.acceleration = aceleracionBase;
+                if (modoDegradacionActivo)
+                {
+                    agente.acceleration = Mathf.Max(1.0f, aceleracionBase * 0.5f);
+                }
+                else
+                {
+                    agente.acceleration = aceleracionBase;
+                }
 
                 if (managerEVE != null)
                 {
