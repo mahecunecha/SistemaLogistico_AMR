@@ -36,7 +36,7 @@ This section is managed by Funplay MCP for Unity. Everything between the begin a
 
 ## Project
 
-- Project root: `/mnt/IgniteDrive/Proyectos_Unity/SistemaLogistico_AMR`
+- Project root: `C:\Users\Aprendiz\Documents\ProyectosUnity\SistemaLogistico_AMR`
 - Product name: `SistemaLogistico_AMR`
 
 ## Notes

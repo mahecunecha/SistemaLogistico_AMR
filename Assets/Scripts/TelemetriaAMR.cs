@@ -1,7 +1,6 @@
 using UnityEngine;
 using UnityEngine.AI;
 using TMPro;
-using System.Reflection;
 
 public class TelemetriaAMR : MonoBehaviour
 {
@@ -13,17 +12,38 @@ public class TelemetriaAMR : MonoBehaviour
     public TextMeshProUGUI txtPayload;
     public TextMeshProUGUI txtETA;
 
-    private FieldInfo pedidoField;
+    [Header("Throttling Settings")]
+    private float tiempoProximoRefrescoETA = 0f;
+    private const float IntervaloRefrescoETA = 0.15f; // ~6.6 Hz de refresco
+    private float ultimoETAValor = -1f;
+    private bool ultimoEstadoETAPendiente = false;
 
-    void Start()
+    void Awake()
     {
         robot = GetComponentInParent<RobotAMR>();
         agente = GetComponentInParent<NavMeshAgent>();
+    }
 
+    void OnEnable()
+    {
         if (robot != null)
         {
-            pedidoField = typeof(RobotAMR).GetField("pedidoActual", BindingFlags.NonPublic | BindingFlags.Instance);
+            robot.OnEstadoCambiado += ActualizarTelemetriaEstadoYPayload;
         }
+        ActualizarTelemetriaEstadoYPayload(robot != null ? robot.estadoActual : RobotAMR.EstadoRobot.Inactivo);
+    }
+
+    void OnDisable()
+    {
+        if (robot != null)
+        {
+            robot.OnEstadoCambiado -= ActualizarTelemetriaEstadoYPayload;
+        }
+    }
+
+    void Start()
+    {
+        ActualizarTelemetriaEstadoYPayload(robot != null ? robot.estadoActual : RobotAMR.EstadoRobot.Inactivo);
     }
 
     void LateUpdate()
@@ -38,44 +58,67 @@ public class TelemetriaAMR : MonoBehaviour
     {
         if (robot == null || agente == null) return;
 
+        // Throttling para cálculo y renderizado de ETA (~6-7 Hz para eliminar GC pressure a 60 FPS)
+        if (Time.time >= tiempoProximoRefrescoETA)
+        {
+            tiempoProximoRefrescoETA = Time.time + IntervaloRefrescoETA;
+            ActualizarETAThrottled();
+        }
+    }
+
+    private void ActualizarTelemetriaEstadoYPayload(RobotAMR.EstadoRobot nuevoEstado)
+    {
         if (txtEstado != null)
-            txtEstado.text = robot.estadoActual.ToString();
+        {
+            txtEstado.text = nuevoEstado.ToString();
+        }
 
         if (txtPayload != null)
         {
             float peso = 0f;
-            if (robot.estadoActual == RobotAMR.EstadoRobot.Transportando || robot.estadoActual == RobotAMR.EstadoRobot.Entregando)
+            if (robot != null && (nuevoEstado == RobotAMR.EstadoRobot.Transportando || nuevoEstado == RobotAMR.EstadoRobot.Entregando))
             {
-                if (pedidoField != null)
+                if (robot.PedidoActual != null)
                 {
-                    object pedidoObj = pedidoField.GetValue(robot);
-                    if (pedidoObj != null)
-                    {
-                        FieldInfo pesoField = pedidoObj.GetType().GetField("peso_kg", BindingFlags.Public | BindingFlags.Instance);
-                        if (pesoField != null)
-                        {
-                            peso = System.Convert.ToSingle(pesoField.GetValue(pedidoObj));
-                        }
-                    }
+                    peso = robot.PedidoActual.peso_kg;
                 }
             }
-            txtPayload.text = peso > 0 ? $"{peso} kg" : "0 kg";
+            txtPayload.text = peso > 0 ? $"{peso:F0} kg" : "0 kg";
         }
+    }
 
-        if (txtETA != null)
+    private void ActualizarETAThrottled()
+    {
+        if (txtETA == null) return;
+
+        if (agente.pathPending)
         {
-            if (agente.pathPending)
+            if (!ultimoEstadoETAPendiente)
             {
                 txtETA.text = "ETA: --";
+                ultimoEstadoETAPendiente = true;
+                ultimoETAValor = -1f;
             }
-            else if (agente.remainingDistance > 0.5f && agente.velocity.magnitude > 0.1f)
+        }
+        else if (agente.remainingDistance > 0.5f && agente.velocity.magnitude > 0.1f)
+        {
+            float eta = agente.remainingDistance / agente.velocity.magnitude;
+            float etaRedondeado = Mathf.Round(eta * 10f) / 10f; // Redondeo a 1 decimal
+
+            if (Mathf.Abs(etaRedondeado - ultimoETAValor) >= 0.1f || ultimoEstadoETAPendiente)
             {
-                float eta = agente.remainingDistance / agente.velocity.magnitude;
-                txtETA.text = $"ETA: {eta:F1}s";
+                ultimoETAValor = etaRedondeado;
+                ultimoEstadoETAPendiente = false;
+                txtETA.text = $"ETA: {etaRedondeado:F1}s";
             }
-            else
+        }
+        else
+        {
+            if (ultimoETAValor != 0f || ultimoEstadoETAPendiente)
             {
                 txtETA.text = "ETA: --";
+                ultimoETAValor = 0f;
+                ultimoEstadoETAPendiente = false;
             }
         }
     }

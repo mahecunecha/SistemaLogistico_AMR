@@ -20,6 +20,15 @@ public class RobotManagerEVE : MonoBehaviour
     public bool turnoIniciado = false;
     private Dictionary<string, Transform> directorioBodega = new Dictionary<string, Transform>();
 
+    [Header("Trazabilidad LIFO Camión")]
+    private Stack<Pedido> matrizLIFOCamion = new Stack<Pedido>();
+    private List<GameObject> palletsEntregados = new List<GameObject>();
+    private float pesoAcumuladoCamion = 0f;
+    private const float CapacidadMaximaCamionKg = 12000f;
+
+    public Stack<Pedido> MatrizLIFOCamion => matrizLIFOCamion;
+    public float PesoAcumuladoCamion => pesoAcumuladoCamion;
+
     void Awake()
     {
         CargarManifiesto();
@@ -78,6 +87,46 @@ public class RobotManagerEVE : MonoBehaviour
         }
     }
 
+    public void RegistrarEntregaLIFO(Pedido pedidoEntregado, GameObject palletFisico)
+    {
+        if (pedidoEntregado == null) return;
+
+        matrizLIFOCamion.Push(pedidoEntregado);
+        pesoAcumuladoCamion += pedidoEntregado.peso_kg;
+
+        Transform zonaCamionTransform = null;
+        GameObject zonaObj = GameObject.Find("Zona_Camion");
+        if (zonaObj != null) zonaCamionTransform = zonaObj.transform;
+
+        if (palletFisico != null)
+        {
+            palletsEntregados.Add(palletFisico);
+
+            if (zonaCamionTransform != null)
+            {
+                // Desemparentar del AMR preservando escala de mundo
+                palletFisico.transform.SetParent(null, true);
+
+                // Cuadrícula LIFO: acomodar a lo largo del eje Z del camión
+                int indiceLIFO = matrizLIFOCamion.Count; // 1, 2, 3...
+                float zOffset = (indiceLIFO - 2) * 1.6f;
+                float ySuperficie = zonaCamionTransform.position.y + 1.55f;
+
+                Vector3 posicionLIFO = new Vector3(
+                    zonaCamionTransform.position.x,
+                    ySuperficie,
+                    zonaCamionTransform.position.z + zOffset
+                );
+
+                palletFisico.transform.position = posicionLIFO;
+                palletFisico.transform.rotation = zonaCamionTransform.rotation;
+            }
+        }
+
+        DashboardUI.Instance?.RegistrarLog($"<color=cyan>[MATRIZ LIFO]:</color> Estiba {pedidoEntregado.id_pallet} apilada en Posición #{matrizLIFOCamion.Count} (Peso acumulado: {pesoAcumuladoCamion:F0} kg / {CapacidadMaximaCamionKg:F0} kg)");
+        Debug.Log($"<color=cyan>[MATRIZ LIFO]:</color> Estiba {pedidoEntregado.id_pallet} apilada en Posición #{matrizLIFOCamion.Count}. Peso acumulado: {pesoAcumuladoCamion:F0} kg.");
+    }
+
     public void ConfirmarEntregaExitosa()
     {
         indicePedidoActual++;
@@ -101,9 +150,6 @@ public class RobotManagerEVE : MonoBehaviour
 
         Transform destino = waypoints[indiceWaypointActual];
         if (destino == null) return;
-        /*En Unity, la palabra transform (con "t" minúscula) es una variable nativa e invisible
-        que el motor le otorga automáticamente a todos los scripts que heredan de MonoBehaviour.
-        No necesitas declararla en tu código porque ya existe en el núcleo del sistema.*/
         transform.position = Vector3.SmoothDamp(transform.position, destino.position, ref velocidadActualEVE, smoothTime, velocidadVuelo);
         
         Vector3 direccion = (destino.position - transform.position).normalized;
