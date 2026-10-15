@@ -162,6 +162,32 @@ public class RobotAMR : MonoBehaviour
         DashboardUI.Instance?.RegistrarLog("<color=orange>[OVERRIDE EJECUTADO] Protocolo de contingencia forzado. Modo de degradación térmica activo: Aceleración -50%, Consumo +30%.</color>");
     }
 
+    public void AbortarMisionPorSeguridad()
+    {
+        DashboardUI.Instance?.MostrarEmergencia(false);
+
+        string idPallet = pedidoActual != null ? pedidoActual.id_pallet : "ORDEN";
+        int indicePedido = managerEVE != null ? managerEVE.indicePedidoActual : 0;
+        DashboardUI.Instance?.ActualizarEstadoManifiesto(indicePedido, "REPROGRAMADO", new Color(1.0f, 0.55f, 0.1f));
+
+        DashboardUI.Instance?.RegistrarLog($"<color=#FFA500>[DECISIÓN GERENCIAL]:</color> Misión {idPallet} abortada preventivamente. Celda protegida al {bateriaActual:F1}%. Orden reprogramada.");
+        Debug.Log($"<color=orange>[DECISIÓN GERENCIAL]:</color> Misión {idPallet} abortada preventivamente. Batería conservada al {bateriaActual:F1}%.");
+
+        if (agente != null)
+        {
+            agente.isStopped = true;
+            agente.ResetPath();
+        }
+
+        estadoActual = EstadoRobot.Inactivo;
+        OnEstadoCambiado?.Invoke(estadoActual);
+
+        if (managerEVE != null)
+        {
+            managerEVE.ConfirmarEntregaExitosa();
+        }
+    }
+
     private GameObject ConstruirPalletVisual(Pedido pedido)
     {
         GameObject rootPallet = new GameObject($"Pallet_{pedido.id_pallet}_{pedido.codigo_sku}");

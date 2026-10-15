@@ -54,7 +54,18 @@ public class DashboardUI : MonoBehaviour
         
         if (mostrar && textoDetalleEmergencia != null)
         {
-            string mensaje = $"ALERTA PREDICTIVA DE RIESGO OPERATIVO\n\nBatería proyectada al retorno: {bateriaProyectada:F1}% (± {varianzaMargen:F1}% varianza térmica)\nLímite seguro de celda: 15.0%\n\nEvaluación: Detención preventiva por riesgo de descarga profunda en tránsito.";
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine("<size=22><b><color=#FF3B30>ANOMALÍA PREDICTIVA: VIABILIDAD OPERATIVA COMPROMETIDA</color></b></size>");
+            sb.AppendLine($"Retorno estimado: <b>{bateriaProyectada:F1}%</b> (±{varianzaMargen:F1}% tolerancia térmica)  |  Límite seguro de celda: <b>15.0%</b>");
+            sb.AppendLine("─────────────────────────────────────────────────────────────────");
+            sb.AppendLine("<b>MATRIZ DE TRADE-OFF GERENCIAL (DECISIÓN SUPERVISOR - INDUSTRIA 5.0):</b>\n");
+            sb.AppendLine("• <b>[OPCIÓN A: FORZAR OVERRIDE]</b>");
+            sb.AppendLine("  Consumo motor: +30% | Aceleración: -50% | Degradación térmica de celda: ALTA.");
+            sb.AppendLine("  <i>Riesgo:</i> Agotamiento severo en retorno; detención catastrófica si la demanda supera la cota.\n");
+            sb.AppendLine("• <b>[OPCIÓN B: ABORTAR Y REPROGRAMAR]</b>");
+            sb.AppendLine("  Daño de hardware: 0% | Vida útil de batería protegida | Estado estiba: REPROGRAMADO.");
+            sb.AppendLine("  <i>Impacto:</i> Despacho diferido al próximo turno. Retorno seguro sin penalizar flota.");
+            string mensaje = sb.ToString();
             
             var prop = textoDetalleEmergencia.GetType().GetProperty("text");
             if (prop != null)
@@ -75,6 +86,16 @@ public class DashboardUI : MonoBehaviour
         if (robot != null)
         {
             robot.EjecutarOverride();
+        }
+    }
+
+    public void OnAbortarMisionPresionado()
+    {
+        MostrarEmergencia(false);
+        RobotAMR robot = UnityEngine.Object.FindObjectOfType<RobotAMR>();
+        if (robot != null)
+        {
+            robot.AbortarMisionPorSeguridad();
         }
     }
 

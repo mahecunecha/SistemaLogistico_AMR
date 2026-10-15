@@ -1,13 +1,13 @@
 ---
 name: funplay-unity-ui-composition
-description: Build and revise responsive Unity uGUI mobile interfaces, including portrait and landscape layouts, safe areas, prefabs, auto layout, scrolling, text, input, animation, and performance validation.
+description: Build and revise Unity UI, primarily uGUI mobile page prefabs, with framework-aware routing, Sprite import safety, text effects, localization and visual verification.
 ---
 <!-- Funplay Unity MCP managed project skills -->
-<!-- Funplay Unity MCP skill version: unity-ui-composition@1.0.7 -->
+<!-- Funplay Unity MCP skill version: unity-ui-composition@1.0.8 -->
 
 # Unity UI Composition
 
-Use this built-in skill when creating, assembling, adapting, reviewing, or fixing Canvas-based Unity UI, especially mobile screen or popup prefabs that must work across aspect ratios, notches, tablets, localization, and runtime state changes.
+Use this built-in skill when creating, assembling, adapting, reviewing, or fixing Unity UI, especially Canvas-based mobile screen or popup prefabs. Identify the target framework before applying component guidance.
 
 ## MCP-First Unity UI Operations
 
@@ -15,6 +15,19 @@ Use this built-in skill when creating, assembling, adapting, reviewing, or fixin
 - Check the connected project's tools/list and, when available, `get_tool_capabilities`. A tool missing from exposure, compilation/domain reload or a temporary disconnection is not evidence of a missing capability: check exposure/readiness and recover status first. Respect custom allowlists; do not widen exposure or use another interaction method to bypass restrictions.
 - Prefer specialized MCP tools; for project-specific gaps they do not cover, use a permitted, guarded `execute_code` call through Unity Editor APIs when it can perform the step reliably. Computer use is a fallback only for a confirmed MCP capability gap, or an explicit user request: explain the uncovered step before using it, limit it to that step, and return to MCP readback/validation when available. If recovery fails, report the connection blocker rather than silently switching methods or repeating uncertain mutations.
 - This routing applies to operating Unity, not ordinary source-file editing or viewing supplied design references and already-captured images/videos with appropriate file or media tools.
+
+## Framework And Task Routing
+
+Identify the target screen's framework before editing. The Canvas component guidance below applies to uGUI, not automatically to UI Toolkit or IMGUI. Preserve the existing framework, text convention and bindings; do not convert or rebuild a screen to fit this skill.
+
+Read only the references needed for the current task:
+
+- For unfamiliar or mixed UI frameworks and Editor windows: [UI framework selection](references/unity-ui-composition/ui-frameworks.md).
+- Before changing Sprite borders, pivots or slicing: [Sprite importer safety](references/unity-ui-composition/sprite-importers.md).
+- For font assets, text effects, missing glyphs or requested localization: [TMP and localization](references/unity-ui-composition/text-localization.md).
+
+These are original Funplay adaptations informed by the pinned Unity official plugin 0.1.8-beta. They supplement, not replace, the MCP-first, prefab-preservation and design-fidelity rules here.
+
 
 ## Operating Loop
 
@@ -206,6 +219,6 @@ Use this built-in skill when creating, assembling, adapting, reviewing, or fixin
 ## Metadata
 
 - Original skill id: `unity-ui-composition`
-- Skill version: `1.0.7`
+- Skill version: `1.0.8`
 - Platform: `antigravity`
 - Source repository: `https://github.com/FunplayAI/funplay-unity-mcp`
