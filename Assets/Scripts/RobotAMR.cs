@@ -6,15 +6,24 @@ public class RobotAMR : MonoBehaviour
 {
     /* Máquina de Estados Finitos (FSM) para blindar el código contra errores lógicos, enum es una lista restrictiva.
     Le prohíbe a la variable estadoActual tener cualquier otro valor que no sea uno de esos tres.*/
-    public enum EstadoRobot { Inactivo, En_Transito, Extrayendo, Transportando, Interrumpido, Entregando }
+    public enum EstadoRobot { Inactivo, En_Transito, Extrayendo, Transportando, Interrumpido, Entregando, Recargando }
     
     public event System.Action<EstadoRobot> OnEstadoCambiado;
 
+    [Header("Identidad de Flota")]
+    public string idRobot = "AMR-01";
+
     [Header("Telemetría Batería")]
-    public float bateriaActual = 100f;
-    public float coeficienteVacio = 0.06f;
-    public float coeficienteCarga = 0.125f;
+    public float bateriaActual = 80.0f;
+    public float coeficienteVacio = 0.012f;
+    public float coeficienteCarga = 0.024f;
     public float consumoIdle = 0.01f;
+
+    [Header("Throttling Telemetría")]
+    private float tiempoProximoEnvioTelemetria = 0f;
+    private const float IntervaloTelemetria = 0.15f; // ~6.6 Hz
+    private float ultimaBateriaTransmitida = -1f;
+    private EstadoRobot ultimoEstadoTransmitido = (EstadoRobot)(-1);
 
     [Header("Sensores LiDAR")]
     public LayerMask capaObstaculos = 1; // Default layer (bit 0) por defecto
@@ -83,8 +92,24 @@ public class RobotAMR : MonoBehaviour
         }
     }
 
+    [Header("Batería Industrial LiFePO4")]
+    public const float UmbralSeguridadLiFePO4 = 20.0f;
+
+    [Header("Ruteo TMS")]
+    public int numCamionAsignado = 1;
+
     private bool CalcularViabilidadOperativa(Pedido pedido, Transform destino, out float bateriaRestanteEstimada)
     {
+        // Si la zona de transferencia no ha sido resuelta para este pedido, consultar al TMS
+        if (zonaTransferencia == null)
+        {
+            ModuloDespachoTMS tms = (managerEVE != null && managerEVE.gestorTMS != null) ? managerEVE.gestorTMS : ModuloDespachoTMS.Instance;
+            if (tms != null)
+            {
+                zonaTransferencia = tms.ConsultarMuelleDestino(pedido, out numCamionAsignado, out _);
+            }
+        }
+
         float distanciaIda = CalcularDistanciaNavMesh(transform.position, destino.position);
         float distanciaVuelta = 0f;
         if (zonaTransferencia != null)
@@ -99,7 +124,7 @@ public class RobotAMR : MonoBehaviour
 
         bateriaRestanteEstimada = bateriaActual - gastoProyectadoTotal;
 
-        return bateriaRestanteEstimada >= 15.0f;
+        return bateriaRestanteEstimada >= UmbralSeguridadLiFePO4;
     }
 
     public void AsignarMision(Pedido nuevoPedido, Transform destinoFisico)
@@ -122,7 +147,7 @@ public class RobotAMR : MonoBehaviour
         
         if (!CalcularViabilidadOperativa(pedidoActual, destinoFisico, out float bateriaProyectada))
         {
-            DashboardUI.Instance?.RegistrarLog($"<color=red>[ALERTA PREDICTIVA] Misión inviable. Retorno proyectado: {bateriaProyectada:F1}% (Umbral crítico: 15%). Detención preventiva.</color>");
+            DashboardUI.Instance?.RegistrarLog($"<color=red>[ALERTA PREDICTIVA] Misión inviable. Retorno proyectado: {bateriaProyectada:F1}% (Umbral LiFePO4: {UmbralSeguridadLiFePO4:F0}%). Detención preventiva.</color>");
             DashboardUI.Instance?.MostrarEmergencia(true, bateriaProyectada, 3.2f);
             estadoActual = EstadoRobot.Interrumpido;
             OnEstadoCambiado?.Invoke(estadoActual);
@@ -141,6 +166,29 @@ public class RobotAMR : MonoBehaviour
         agente.SetDestination(destinoActual.position); // Da la orden de moverse
         Debug.Log("<color=cyan>AMR Desplegado:</color> Viajando a " + destinoFisico.name + " para buscar " + pedidoActual.codigo_sku);
         DashboardUI.Instance?.RegistrarLog("AMR Desplegado: Viajando a " + destinoFisico.name);
+    }
+
+    public void EnviarACargaInductiva(Vector3 posicionPad)
+    {
+        DashboardUI.Instance?.MostrarEmergencia(false);
+
+        // Limpieza estricta de memoria de la misión abortada para evitar extracciones fantasma
+        pedidoActual = null;
+        zonaTransferencia = null;
+
+        if (agente != null)
+        {
+            agente.isStopped = false;
+            agente.ResetPath();
+            agente.speed = velocidadBase;
+            agente.acceleration = aceleracionBase;
+            agente.SetDestination(posicionPad);
+        }
+
+        estadoActual = EstadoRobot.Recargando;
+        OnEstadoCambiado?.Invoke(estadoActual);
+        Debug.Log($"<color=green>[CARGA INDUCTIVA]:</color> {gameObject.name} navegando a Pad de carga en {posicionPad}");
+        DashboardUI.Instance?.RegistrarLog($"<color=green>[CARGA INDUCTIVA]:</color> {gameObject.name} navegando a Pad de recarga.");
     }
 
     public void EjecutarOverride()
@@ -271,6 +319,18 @@ public class RobotAMR : MonoBehaviour
         {
             agente.isStopped = false;
         }
+
+        // Consultar o validar muelle de destino en ModuloDespachoTMS al iniciar retorno
+        if (managerEVE != null && managerEVE.gestorTMS != null)
+        {
+            Transform muelleDestino = managerEVE.gestorTMS.ConsultarMuelleDestino(pedidoActual, out numCamionAsignado, out _);
+            if (muelleDestino != null) zonaTransferencia = muelleDestino;
+        }
+        else if (ModuloDespachoTMS.Instance != null)
+        {
+            Transform muelleDestino = ModuloDespachoTMS.Instance.ConsultarMuelleDestino(pedidoActual, out numCamionAsignado, out _);
+            if (muelleDestino != null) zonaTransferencia = muelleDestino;
+        }
         
         if (zonaTransferencia != null)
         {
@@ -281,8 +341,8 @@ public class RobotAMR : MonoBehaviour
             agente.acceleration = Mathf.Max(1.0f, aceleracionBase - (pedidoActual.peso_kg * coeficientePeso * 2f));
 
             agente.SetDestination(zonaTransferencia.position);
-            Debug.Log("<color=cyan>AMR Retornando:</color> Llevando estiba a la Zona de Transferencia.");
-            DashboardUI.Instance?.RegistrarLog("AMR Retornando: Llevando estiba a Zona de Transferencia.");
+            Debug.Log("<color=cyan>AMR Retornando:</color> Llevando estiba a la Zona de Transferencia (" + zonaTransferencia.name + ").");
+            DashboardUI.Instance?.RegistrarLog("AMR Retornando: Llevando estiba a " + zonaTransferencia.name);
         }
         else
         {
@@ -306,10 +366,18 @@ public class RobotAMR : MonoBehaviour
             agente.velocity = Vector3.zero;
         }
 
-        // CRI-03: Desacoplar pallet del AMR y transferirlo a la Matriz LIFO del Camión
-        if (managerEVE != null && palletActualGO != null)
+        // Desacoplar pallet del AMR y transferirlo a la Matriz LIFO del Camión mediante ModuloDespachoTMS
+        if (palletActualGO != null)
         {
-            managerEVE.RegistrarEntregaLIFO(pedidoActual, palletActualGO);
+            ModuloDespachoTMS tms = (managerEVE != null && managerEVE.gestorTMS != null) ? managerEVE.gestorTMS : ModuloDespachoTMS.Instance;
+            if (tms != null)
+            {
+                tms.RegistrarEstibaEnCamion(numCamionAsignado, pedidoActual, palletActualGO);
+            }
+            else if (managerEVE != null)
+            {
+                managerEVE.RegistrarEntregaLIFO(pedidoActual, palletActualGO);
+            }
             palletActualGO = null;
         }
 
@@ -499,7 +567,14 @@ public class RobotAMR : MonoBehaviour
             Debug.LogError("[FALLO CATASTRÓFICO] Batería agotada al 0% en pasillo. NavMeshAgent inmovilizado.");
         }
 
-        DashboardUI.Instance?.ActualizarBateria(bateriaActual / 100f);
+        // Telemetría con throttling (6.6 Hz / 0.15s) y compuerta por delta (> 0.1% o cambio de estado)
+        if (Time.time >= tiempoProximoEnvioTelemetria || Mathf.Abs(bateriaActual - ultimaBateriaTransmitida) > 0.1f || estadoActual != ultimoEstadoTransmitido)
+        {
+            tiempoProximoEnvioTelemetria = Time.time + IntervaloTelemetria;
+            ultimaBateriaTransmitida = bateriaActual;
+            ultimoEstadoTransmitido = estadoActual;
+            DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
+        }
 
         if (estadoActual == EstadoRobot.En_Transito)
         {
@@ -518,6 +593,17 @@ public class RobotAMR : MonoBehaviour
             if (zonaTransferencia != null && !agente.pathPending && agente.remainingDistance <= 1.0f)
             {
                 StartCoroutine(ProcesoEntrega());
+            }
+        }
+        else if (estadoActual == EstadoRobot.Recargando)
+        {
+            if (!agente.pathPending && agente.remainingDistance <= 0.5f)
+            {
+                // Llegó al pad de inducción. Frenar y recargar progresivamente.
+                agente.isStopped = true;
+                const float TasaCargaInductivaPorSegundo = 0.05f; // Modela recarga lenta y estable LiFePO4
+                bateriaActual = Mathf.Min(80.0f, bateriaActual + (Time.deltaTime * TasaCargaInductivaPorSegundo));
+                DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
             }
         }
     }

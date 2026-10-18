@@ -3,6 +3,8 @@ using Unity.Cinemachine;
 
 public class DirectorCinematico : MonoBehaviour
 {
+    public static DirectorCinematico Instance { get; private set; }
+
     [Header("Emisores")]
     public RobotManagerEVE managerEVE;
     public RobotAMR robotAMR;
@@ -12,6 +14,37 @@ public class DirectorCinematico : MonoBehaviour
     public CinemachineCamera vcam2_EVE;
     public CinemachineCamera vcam3_AMR_Hombro;
     public CinemachineCamera vcam4_Emergencia;
+
+    private void Awake()
+    {
+        if (Instance != null && Instance != this)
+        {
+            Destroy(this);
+            return;
+        }
+        Instance = this;
+    }
+
+    private void OnDestroy()
+    {
+        if (Instance == this)
+        {
+            Instance = null;
+        }
+    }
+
+    public void RelevarRobotActivo(RobotAMR nuevoRobot)
+    {
+        if (robotAMR != null) robotAMR.OnEstadoCambiado -= EvaluarEstadoAMR;
+        robotAMR = nuevoRobot;
+        if (robotAMR != null)
+        {
+            robotAMR.OnEstadoCambiado += EvaluarEstadoAMR;
+            if (vcam3_AMR_Hombro != null) vcam3_AMR_Hombro.Target.TrackingTarget = robotAMR.transform;
+            if (vcam4_Emergencia != null) vcam4_Emergencia.Target.TrackingTarget = robotAMR.transform;
+            EvaluarEstadoAMR(robotAMR.estadoActual);
+        }
+    }
 
     private void OnEnable()
     {

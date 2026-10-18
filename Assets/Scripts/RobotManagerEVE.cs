@@ -1,5 +1,6 @@
 using UnityEngine;
 using System.IO;
+using System.Collections;
 using System.Collections.Generic;
 
 public class RobotManagerEVE : MonoBehaviour
@@ -12,6 +13,13 @@ public class RobotManagerEVE : MonoBehaviour
     private int indiceWaypointActual = 0;
     private Vector3 velocidadActualEVE;
     private float smoothTime = 0.6f;
+
+    [Header("Integración TMS (Módulo 5)")]
+    public ModuloDespachoTMS gestorTMS;
+
+    [Header("Flota de Robots AMR")]
+    public RobotAMR robotAMR_01;
+    public RobotAMR robotAMR_02;
 
     [Header("Base de Datos Local")]
     public Manifiesto manifiestoActual;
@@ -31,6 +39,19 @@ public class RobotManagerEVE : MonoBehaviour
 
     void Awake()
     {
+        if (gestorTMS == null) gestorTMS = FindFirstObjectByType<ModuloDespachoTMS>();
+        if (robotAMR_01 == null)
+        {
+            GameObject r1 = GameObject.Find("Robot_AMR");
+            if (r1 != null) robotAMR_01 = r1.GetComponent<RobotAMR>();
+        }
+        if (robotAMR_02 == null)
+        {
+            GameObject r2 = GameObject.Find("Robot_AMR_02");
+            if (r2 != null) robotAMR_02 = r2.GetComponent<RobotAMR>();
+        }
+        if (robotEjecutor == null) robotEjecutor = robotAMR_01;
+
         CargarManifiesto();
     }
 
@@ -53,6 +74,14 @@ public class RobotManagerEVE : MonoBehaviour
         {
             var pedido = manifiestoActual.pedidos[indicePedidoActual];
             directorioBodega.TryGetValue(pedido.coordenada_bodega, out Transform destino);
+
+            if (gestorTMS != null)
+            {
+                Transform muelleDestino = gestorTMS.ConsultarMuelleDestino(pedido, out int numCamion, out int slot);
+                robotEjecutor.zonaTransferencia = muelleDestino;
+                robotEjecutor.numCamionAsignado = numCamion;
+            }
+
             robotEjecutor.AsignarMision(pedido, destino);
         }
         DashboardUI.Instance?.RegistrarLog("<color=green>[WMS]:</color> Turno de despacho nocturno iniciado.");
@@ -132,16 +161,114 @@ public class RobotManagerEVE : MonoBehaviour
         indicePedidoActual++;
         if (indicePedidoActual < manifiestoActual.pedidos.Count)
         {
-            var pedido = manifiestoActual.pedidos[indicePedidoActual];
-            directorioBodega.TryGetValue(pedido.coordenada_bodega, out Transform destino);
-            robotEjecutor.AsignarMision(pedido, destino);
-            OnMisionEvaluada?.Invoke();
+            if (indicePedidoActual == 1)
+            {
+                StartCoroutine(SecuenciaSaltoTemporal());
+                return;
+            }
+
+            DespacharPedido(indicePedidoActual);
         }
         else
         {
             Debug.Log("<color=green>Operación Finalizada:</color> Manifiesto Nocturno completado. No hay más pedidos.");
             DashboardUI.Instance?.RegistrarLog("Operación Finalizada: Manifiesto completado.");
         }
+    }
+
+    private void DespacharPedido(int indice)
+    {
+        if (manifiestoActual == null || indice >= manifiestoActual.pedidos.Count || robotEjecutor == null) return;
+
+        var pedido = manifiestoActual.pedidos[indice];
+        directorioBodega.TryGetValue(pedido.coordenada_bodega, out Transform destino);
+
+        if (gestorTMS != null)
+        {
+            Transform muelleDestino = gestorTMS.ConsultarMuelleDestino(pedido, out int numCamion, out int slot);
+            robotEjecutor.zonaTransferencia = muelleDestino;
+            robotEjecutor.numCamionAsignado = numCamion;
+        }
+
+        robotEjecutor.AsignarMision(pedido, destino);
+        OnMisionEvaluada?.Invoke();
+    }
+
+    private IEnumerator SecuenciaSaltoTemporal()
+    {
+        DashboardUI.Instance?.RegistrarLog("<color=#F59E0B><b>[TIME-LAPSE LOGÍSTICO]:</b> Avanzando 7 horas de turno continuo. Simulando fatiga de flota...</color>");
+        DashboardUI.Instance?.ActualizarBannerTurno("<b><color=#38BDF8>TURNO NOCTURNO:</color> Hora 7.5/8 (Bloque Final) | Química: <color=#F59E0B>LiFePO4</color> (80% - 20%)</b>");
+
+        RobotAMR amr = robotAMR_01 != null ? robotAMR_01 : robotEjecutor;
+        if (amr != null)
+        {
+            float bateriaInicial = amr.bateriaActual;
+            float bateriaObjetivo = 26.5f;
+            float duracion = 2.0f;
+            float tiempo = 0f;
+
+            while (tiempo < duracion)
+            {
+                tiempo += Time.deltaTime;
+                float t = Mathf.Clamp01(tiempo / duracion);
+                amr.bateriaActual = Mathf.Lerp(bateriaInicial, bateriaObjetivo, t);
+                DashboardUI.Instance?.ActualizarBateria(amr.idRobot, amr.bateriaActual / 100f, amr.estadoActual);
+                yield return null;
+            }
+
+            amr.bateriaActual = bateriaObjetivo;
+            DashboardUI.Instance?.ActualizarBateria(amr.idRobot, amr.bateriaActual / 100f, amr.estadoActual);
+        }
+
+        yield return new WaitForSeconds(0.5f);
+
+        DespacharPedido(indicePedidoActual);
+    }
+
+    public void EjecutarRelevoFlota24_7()
+    {
+        DashboardUI.Instance?.MostrarEmergencia(false);
+
+        // 1. Comanda a robotAMR_01 (o robot actual) a cancelar ruta y navegar a la estación de recarga en (-10.0f, 0.25f, -10.0f) (Pad_Inductivo_01)
+        RobotAMR robotSaliente = robotEjecutor != null ? robotEjecutor : robotAMR_01;
+        if (robotSaliente != null)
+        {
+            Vector3 destinoPad01 = new Vector3(-10.0f, 0.25f, -10.0f);
+            Transform pad1 = GameObject.Find("Pad_Inductivo_01")?.transform;
+            if (pad1 != null) destinoPad01 = pad1.position;
+
+            robotSaliente.EnviarACargaInductiva(destinoPad01);
+        }
+
+        // 2. Despierta a robotAMR_02 en Pad_Inductivo_02 (iniciado al 80%), nómbralo robotActivo y asígnale el Pedido 3 pendiente
+        if (robotAMR_02 != null)
+        {
+            robotEjecutor = robotAMR_02;
+
+            indicePedidoActual = 2; // Pedido 3 (índice 2)
+            if (manifiestoActual != null && indicePedidoActual < manifiestoActual.pedidos.Count)
+            {
+                var pedido3 = manifiestoActual.pedidos[indicePedidoActual];
+                directorioBodega.TryGetValue(pedido3.coordenada_bodega, out Transform destino);
+
+                if (gestorTMS != null)
+                {
+                    Transform muelleDestino = gestorTMS.ConsultarMuelleDestino(pedido3, out int numCamion, out int slot);
+                    robotAMR_02.zonaTransferencia = muelleDestino;
+                    robotAMR_02.numCamionAsignado = numCamion;
+                }
+
+                robotAMR_02.AsignarMision(pedido3, destino);
+            }
+
+            // 3. Invoca DirectorCinematico.Instance?.RelevarRobotActivo(robotAMR_02)
+            DirectorCinematico.Instance?.RelevarRobotActivo(robotAMR_02);
+        }
+
+        // 4. Registra en el Dashboard
+        string mensajeRelevo = "[RELEVO 24/7]: AMR-01 acoplado a carga inductiva (Pad 01). AMR-02 desplegado para Pedido 3.";
+        DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8><b>{mensajeRelevo}</b></color>");
+        Debug.Log($"<color=cyan>{mensajeRelevo}</color>");
     }
 
     void MoverPorWaypoints()
