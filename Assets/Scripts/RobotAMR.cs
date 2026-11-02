@@ -30,6 +30,8 @@ public class RobotAMR : MonoBehaviour
     private float distanciaDeteccionAlerta = 1.2f;
     private float distanciaMaxSensor = 4.0f;
     private bool obstaculoDetectado = false;
+    private bool enParadaSeguridadLiDAR = false;
+    private EstadoRobot estadoPrevioBloqueo = EstadoRobot.Inactivo;
 
     private float velocidadBase = 3.5f;
     private float aceleracionBase = 8.0f;
@@ -57,6 +59,7 @@ public class RobotAMR : MonoBehaviour
     void Awake()
     {
         agente = GetComponent<NavMeshAgent>();
+        if (managerEVE == null) managerEVE = FindFirstObjectByType<RobotManagerEVE>();
     }
 
     private float CalcularDistanciaNavMesh(Vector3 origen, Vector3 destino)
@@ -127,6 +130,17 @@ public class RobotAMR : MonoBehaviour
         return bateriaRestanteEstimada >= UmbralSeguridadLiFePO4;
     }
 
+    public void AsignarMision(Pedido nuevoPedido)
+    {
+        Transform destino = null;
+        if (nuevoPedido != null && !string.IsNullOrEmpty(nuevoPedido.coordenada_bodega))
+        {
+            GameObject go = GameObject.Find(nuevoPedido.coordenada_bodega);
+            if (go != null) destino = go.transform;
+        }
+        AsignarMision(nuevoPedido, destino);
+    }
+
     public void AsignarMision(Pedido nuevoPedido, Transform destinoFisico)
     {
         /* Regla de seguridad: Solo acepta misiones si está inactivo
@@ -147,6 +161,8 @@ public class RobotAMR : MonoBehaviour
         
         if (!CalcularViabilidadOperativa(pedidoActual, destinoFisico, out float bateriaProyectada))
         {
+            destinoActual = destinoFisico;
+            Debug.Log("<color=#10B981>[FLUJO]: 6. Pedido 3 evaluado. Emergencia de Batería (Ind. 5.0) disparada. Esperando decisión del supervisor.</color>");
             DashboardUI.Instance?.RegistrarLog($"<color=red>[ALERTA PREDICTIVA] Misión inviable. Retorno proyectado: {bateriaProyectada:F1}% (Umbral LiFePO4: {UmbralSeguridadLiFePO4:F0}%). Detención preventiva.</color>");
             DashboardUI.Instance?.MostrarEmergencia(true, bateriaProyectada, 3.2f);
             estadoActual = EstadoRobot.Interrumpido;
@@ -172,8 +188,12 @@ public class RobotAMR : MonoBehaviour
     {
         DashboardUI.Instance?.MostrarEmergencia(false);
 
-        // Limpieza estricta de memoria de la misión abortada para evitar extracciones fantasma
+        // Limpieza estricta de corrutinas y memoria de la misión abortada para evitar extracciones fantasma
+        StopAllCoroutines();
+        enParadaSeguridadLiDAR = false;
+        obstaculoDetectado = false;
         pedidoActual = null;
+        destinoActual = null;
         zonaTransferencia = null;
 
         if (agente != null)
@@ -221,10 +241,18 @@ public class RobotAMR : MonoBehaviour
         DashboardUI.Instance?.RegistrarLog($"<color=#FFA500>[DECISIÓN GERENCIAL]:</color> Misión {idPallet} abortada preventivamente. Celda protegida al {bateriaActual:F1}%. Orden reprogramada.");
         Debug.Log($"<color=orange>[DECISIÓN GERENCIAL]:</color> Misión {idPallet} abortada preventivamente. Batería conservada al {bateriaActual:F1}%.");
 
+        StopAllCoroutines();
+        enParadaSeguridadLiDAR = false;
+        obstaculoDetectado = false;
+        pedidoActual = null;
+        destinoActual = null;
+        zonaTransferencia = null;
+
         if (agente != null)
         {
             agente.isStopped = true;
             agente.ResetPath();
+            agente.velocity = Vector3.zero;
         }
 
         estadoActual = EstadoRobot.Inactivo;
@@ -232,8 +260,24 @@ public class RobotAMR : MonoBehaviour
 
         if (managerEVE != null)
         {
-            managerEVE.ConfirmarEntregaExitosa();
+            managerEVE.NotificarMisionAbortada();
         }
+    }
+
+    public void ReanudarTrasDespejeLiDAR()
+    {
+        if (!enParadaSeguridadLiDAR) return;
+
+        enParadaSeguridadLiDAR = false;
+        obstaculoDetectado = false;
+        estadoActual = estadoPrevioBloqueo;
+
+        if (agente != null)
+        {
+            agente.isStopped = false;
+        }
+
+        OnEstadoCambiado?.Invoke(estadoActual);
     }
 
     private GameObject ConstruirPalletVisual(Pedido pedido)
@@ -436,8 +480,17 @@ public class RobotAMR : MonoBehaviour
         return false;
     }
 
+    private bool EsObstaculoISORegistrado(Transform hitTransform)
+    {
+        if (hitTransform == null || managerEVE == null || managerEVE.obstaculoPasilloISO == null) return false;
+        Transform raizISO = managerEVE.obstaculoPasilloISO.transform;
+        return hitTransform == raizISO || hitTransform.IsChildOf(raizISO);
+    }
+
     private void ProcesarSensoresLiDAR()
     {
+        if (enParadaSeguridadLiDAR) return;
+
         Vector3 origen = transform.position + Vector3.up * 0.5f;
         obstaculoDetectado = false;
 
@@ -475,7 +528,31 @@ public class RobotAMR : MonoBehaviour
                 }
 
                 // 4. Obstáculo imprevisto
-                if (hit.distance < distanciaDeteccionAlerta)
+                // Parada Cat. 3 solo con el AMR en movimiento y ante el obstáculo ISO registrado por EVE.
+                // Evita disparos en reposo (spawn frente a P1-C1-F2) y que EVE desactive infraestructura estática (racks).
+                bool amrEnMovimiento = estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando;
+                if (hit.distance <= 0.85f && !enParadaSeguridadLiDAR && amrEnMovimiento && EsObstaculoISORegistrado(hit.transform))
+                {
+                    Debug.Log("<color=#10B981>[FLUJO]: 4. Emergencia LiDAR (Ind. 4.0) disparada correctamente.</color>");
+                    enParadaSeguridadLiDAR = true;
+                    estadoPrevioBloqueo = estadoActual;
+                    obstaculoDetectado = true;
+                    Debug.DrawLine(origen, hit.point, Color.red);
+
+                    if (agente != null)
+                    {
+                        agente.isStopped = true;
+                        agente.velocity = Vector3.zero;
+                    }
+
+                    estadoActual = EstadoRobot.Interrumpido;
+                    OnEstadoCambiado?.Invoke(estadoActual);
+
+                    if (managerEVE == null) managerEVE = FindFirstObjectByType<RobotManagerEVE>();
+                    managerEVE?.GestionarObstruccionAutonomaISO(this, hit.collider.gameObject);
+                    break;
+                }
+                else if (hit.distance < distanciaDeteccionAlerta)
                 {
                     // Zona de advertencia crítica: reducción preventiva de velocidad
                     obstaculoDetectado = true;
@@ -527,11 +604,14 @@ public class RobotAMR : MonoBehaviour
         // Procesamiento activo del sensor LiDAR con Docking Mute (ISO 3691-4)
         ProcesarSensoresLiDAR();
 
-        // Consumo pasivo obligatorio por encendido de sistemas lógicos
-        bateriaActual -= consumoIdle * Time.deltaTime;
+        // Consumo pasivo obligatorio por encendido de sistemas lógicos (blindado a 0% en parada de seguridad/interrupción)
+        if (!enParadaSeguridadLiDAR && estadoActual != EstadoRobot.Interrumpido)
+        {
+            bateriaActual -= consumoIdle * Time.deltaTime;
+        }
 
         // Matemáticas de Batería (Termodinámica Inyectada)
-        if (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando)
+        if (!enParadaSeguridadLiDAR && estadoActual != EstadoRobot.Interrumpido && (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando))
         {
             float distanciaRecorrida = agente.velocity.magnitude * Time.deltaTime;
             if (distanciaRecorrida > 0)

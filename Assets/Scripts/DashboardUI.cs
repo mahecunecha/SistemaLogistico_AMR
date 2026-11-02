@@ -45,10 +45,13 @@ public class DashboardUI : MonoBehaviour
 
     public void IniciarTurnoNocturno()
     {
-        if (panelMenuModulos != null) panelMenuModulos.SetActive(false);
+        if (panelMenuModulos != null) { panelMenuModulos.SetActive(false); }
         
         GameObject menuPrincipal = GameObject.Find("Canvas_MenuPrincipal");
         if (menuPrincipal != null) menuPrincipal.SetActive(false);
+
+        Transform hud = transform.Find("HUD_Operativo");
+        if (hud != null) hud.gameObject.SetActive(true);
 
         FindObjectOfType<RobotManagerEVE>()?.IniciarTurno();
         RegistrarLog("<color=green>[SISTEMA]:</color> Módulo 4 iniciado por supervisor.");
@@ -68,18 +71,18 @@ public class DashboardUI : MonoBehaviour
         
         if (mostrar && textoDetalleEmergencia != null)
         {
-            StringBuilder sb = new StringBuilder();
-            sb.AppendLine("<size=22><b><color=#FF3B30>ANOMALÍA PREDICTIVA: VIABILIDAD OPERATIVA COMPROMETIDA</color></b></size>");
-            sb.AppendLine($"Retorno estimado: <b>{bateriaProyectada:F1}%</b> (±{varianzaMargen:F1}% tolerancia térmica)  |  Límite seguro de celda: <b>20.0%</b> (LiFePO4)");
-            sb.AppendLine("─────────────────────────────────────────────────────────────────");
-            sb.AppendLine("<b>MATRIZ DE TRADE-OFF GERENCIAL (DECISIÓN SUPERVISOR - INDUSTRIA 5.0):</b>\n");
-            sb.AppendLine("• <b>[OPCIÓN A: FORZAR OVERRIDE]</b>");
-            sb.AppendLine("  Consumo motor: +30% | Aceleración: -50% | Degradación térmica de celda: ALTA.");
-            sb.AppendLine("  <i>Riesgo:</i> Agotamiento severo en retorno; detención catastrófica si la demanda supera la cota.\n");
-            sb.AppendLine("• <b>[OPCIÓN B: ACTIVAR RELEVO 24/7]</b>");
-            sb.AppendLine("  Daño de hardware: 0% | Vida útil de celda protegida al 20% | Acople inductivo Pad 01.");
-            sb.AppendLine("  <i>Impacto:</i> Relevo inmediato con AMR-02. Cero paradas operativas en el turno.");
-            string mensaje = sb.ToString();
+            string mensaje = "╔════════════════════════════════════════════════════════════════════════════════════════╗\n" +
+                             "║             ANOMALÍA PREDICTIVA: VIABILIDAD OPERATIVA COMPROMETIDA                     ║\n" +
+                             $"║  Retorno estimado: {bateriaProyectada:F1}% (±{varianzaMargen:F1}% tolerancia térmica)  |  Límite seguro: 20.0%            ║\n" +
+                             "╠════════════════════════════════════════════════════════════════════════════════════════╣\n" +
+                             "║  MATRIZ DE TRADE-OFF GERENCIAL (DECISIÓN SUPERVISOR - INDUSTRIA 5.0):                  ║\n" +
+                             "║                                                                                        ║\n" +
+                             "║  • [OPCIÓN A: FORZAR OVERRIDE]                                                         ║\n" +
+                             "║    Consumo motor: +30% | Aceleración: -50% | Degradación térmica de celda: ALTA.       ║\n" +
+                             "║                                                                                        ║\n" +
+                             "║  • [OPCIÓN B: ACTIVAR RELEVO 24/7]                                                     ║\n" +
+                             "║    Retirar AMR-01 a carga inductiva. Desplegar AMR-02 (80%) para asumir el pedido.     ║\n" +
+                             "╚════════════════════════════════════════════════════════════════════════════════════════╝";
             
             var prop = textoDetalleEmergencia.GetType().GetProperty("text");
             if (prop != null)
@@ -96,7 +99,8 @@ public class DashboardUI : MonoBehaviour
     public void OnOverridePresionado()
     {
         MostrarEmergencia(false);
-        RobotAMR robot = UnityEngine.Object.FindObjectOfType<RobotAMR>();
+        RobotManagerEVE eve = FindFirstObjectByType<RobotManagerEVE>();
+        RobotAMR robot = (eve != null && eve.robotEjecutor != null) ? eve.robotEjecutor : UnityEngine.Object.FindObjectOfType<RobotAMR>();
         if (robot != null)
         {
             robot.EjecutarOverride();
@@ -112,7 +116,8 @@ public class DashboardUI : MonoBehaviour
     public void OnAbortarMisionPresionado()
     {
         MostrarEmergencia(false);
-        RobotAMR robot = UnityEngine.Object.FindObjectOfType<RobotAMR>();
+        RobotManagerEVE eve = FindFirstObjectByType<RobotManagerEVE>();
+        RobotAMR robot = (eve != null && eve.robotEjecutor != null) ? eve.robotEjecutor : UnityEngine.Object.FindObjectOfType<RobotAMR>();
         if (robot != null)
         {
             robot.AbortarMisionPorSeguridad();

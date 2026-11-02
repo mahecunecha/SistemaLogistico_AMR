@@ -37,6 +37,10 @@ public class RobotManagerEVE : MonoBehaviour
     public Stack<Pedido> MatrizLIFOCamion => matrizLIFOCamion;
     public float PesoAcumuladoCamion => pesoAcumuladoCamion;
 
+    [Header("Simulacion de Incertidumbre ISO 3691-4")]
+    public GameObject obstaculoPasilloISO;
+    private bool despachandoDespejeISO = false;
+
     void Awake()
     {
         if (gestorTMS == null) gestorTMS = FindFirstObjectByType<ModuloDespachoTMS>();
@@ -61,6 +65,11 @@ public class RobotManagerEVE : MonoBehaviour
 
     void Update()
     {
+        if (Input.GetKeyDown(KeyCode.O))
+        {
+            InyectarObstaculoPasilloISO();
+        }
+
         if (!turnoIniciado) return;
         MoverPorWaypoints();
     }
@@ -69,6 +78,21 @@ public class RobotManagerEVE : MonoBehaviour
     {
         if (turnoIniciado) return;
         turnoIniciado = true;
+        Debug.Log("<color=#10B981>[FLUJO]: 1. Botón 'Iniciar Turno' presionado. Despachando Pedido 1.</color>");
+
+        Transform hudTransform = DashboardUI.Instance != null ? DashboardUI.Instance.transform.Find("HUD_Operativo") : null;
+        if (hudTransform != null)
+        {
+            hudTransform.gameObject.SetActive(true);
+        }
+        else
+        {
+            GameObject hud = GameObject.Find("HUD_Operativo");
+            if (hud != null) hud.SetActive(true);
+        }
+
+        // Población sincronizada de la tabla del manifiesto tras activar el HUD
+        FindObjectOfType<GeneradorTablaManifiesto>()?.PoblarTabla(manifiestoActual.pedidos);
 
         if (manifiestoActual != null && manifiestoActual.pedidos.Count > 0 && robotEjecutor != null)
         {
@@ -107,7 +131,6 @@ public class RobotManagerEVE : MonoBehaviour
 
             Debug.Log("<color=green>EVE:</color> Manifiesto cargado. Total de pallets: " + manifiestoActual.pedidos.Count);
             DashboardUI.Instance?.RegistrarLog("EVE: Manifiesto cargado. Total de pallets: " + manifiestoActual.pedidos.Count);
-            FindObjectOfType<GeneradorTablaManifiesto>()?.PoblarTabla(manifiestoActual.pedidos);
         }
         else
         {
@@ -176,6 +199,35 @@ public class RobotManagerEVE : MonoBehaviour
         }
     }
 
+    public void NotificarMisionAbortada()
+    {
+        DashboardUI.Instance?.RegistrarLog("<color=orange>[WMS]:</color> Misión abortada. Avanzando cola de manifiesto.");
+        indicePedidoActual++;
+        if (manifiestoActual != null && indicePedidoActual < manifiestoActual.pedidos.Count)
+        {
+            var pedido = manifiestoActual.pedidos[indicePedidoActual];
+            directorioBodega.TryGetValue(pedido.coordenada_bodega, out Transform destino);
+
+            if (gestorTMS != null && robotEjecutor != null)
+            {
+                Transform muelleDestino = gestorTMS.ConsultarMuelleDestino(pedido, out int numCamion, out int slot);
+                robotEjecutor.zonaTransferencia = muelleDestino;
+                robotEjecutor.numCamionAsignado = numCamion;
+            }
+
+            if (robotEjecutor != null)
+            {
+                robotEjecutor.AsignarMision(pedido, destino);
+            }
+            OnMisionEvaluada?.Invoke();
+        }
+        else
+        {
+            Debug.Log("<color=green>Operación Finalizada:</color> Manifiesto Nocturno completado (Con Reprogramaciones).");
+            DashboardUI.Instance?.RegistrarLog("<color=green>Operación Finalizada:</color> Manifiesto Nocturno completado (Con Reprogramaciones).");
+        }
+    }
+
     private void DespacharPedido(int indice)
     {
         if (manifiestoActual == null || indice >= manifiestoActual.pedidos.Count || robotEjecutor == null) return;
@@ -196,6 +248,7 @@ public class RobotManagerEVE : MonoBehaviour
 
     private IEnumerator SecuenciaSaltoTemporal()
     {
+        Debug.Log("<color=#10B981>[FLUJO]: 2. Pedido 1 Entregado. Iniciando Time-Lapse Logístico (7 horas).</color>");
         DashboardUI.Instance?.RegistrarLog("<color=#F59E0B><b>[TIME-LAPSE LOGÍSTICO]:</b> Avanzando 7 horas de turno continuo. Simulando fatiga de flota...</color>");
         DashboardUI.Instance?.ActualizarBannerTurno("<b><color=#38BDF8>TURNO NOCTURNO:</color> Hora 7.5/8 (Bloque Final) | Química: <color=#F59E0B>LiFePO4</color> (80% - 20%)</b>");
 
@@ -222,6 +275,7 @@ public class RobotManagerEVE : MonoBehaviour
 
         yield return new WaitForSeconds(0.5f);
 
+        Debug.Log("<color=#10B981>[FLUJO]: 3. Time-Lapse completado. Despachando Pedido 2. (PRESIONA 'O' AHORA PARA EMERGENCIA LiDAR)</color>");
         DespacharPedido(indicePedidoActual);
     }
 
@@ -229,9 +283,15 @@ public class RobotManagerEVE : MonoBehaviour
     {
         DashboardUI.Instance?.MostrarEmergencia(false);
 
-        // 1. Comanda a robotAMR_01 (o robot actual) a cancelar ruta y navegar a la estación de recarga en (-10.0f, 0.25f, -10.0f) (Pad_Inductivo_01)
-        RobotAMR robotSaliente = robotEjecutor != null ? robotEjecutor : robotAMR_01;
-        if (robotSaliente != null)
+        // 1. Desvincular AMR-01 nombrando a AMR-02 como nuevo robotEjecutor
+        RobotAMR robotSaliente = robotAMR_01 != null ? robotAMR_01 : robotEjecutor;
+        if (robotAMR_02 != null)
+        {
+            robotEjecutor = robotAMR_02;
+        }
+
+        // 2. Enviar AMR-01 a estación de carga inductiva (Pad_Inductivo_01) limpiando su estado
+        if (robotSaliente != null && robotSaliente != robotAMR_02)
         {
             Vector3 destinoPad01 = new Vector3(-10.0f, 0.25f, -10.0f);
             Transform pad1 = GameObject.Find("Pad_Inductivo_01")?.transform;
@@ -240,32 +300,29 @@ public class RobotManagerEVE : MonoBehaviour
             robotSaliente.EnviarACargaInductiva(destinoPad01);
         }
 
-        // 2. Despierta a robotAMR_02 en Pad_Inductivo_02 (iniciado al 80%), nómbralo robotActivo y asígnale el Pedido 3 pendiente
-        if (robotAMR_02 != null)
+        // 3. Asignar la misión pendiente al nuevo robotEjecutor (AMR-02)
+        if (robotEjecutor != null && manifiestoActual != null && indicePedidoActual < manifiestoActual.pedidos.Count)
         {
-            robotEjecutor = robotAMR_02;
+            var pedidoPendiente = manifiestoActual.pedidos[indicePedidoActual];
+            directorioBodega.TryGetValue(pedidoPendiente.coordenada_bodega, out Transform destino);
 
-            indicePedidoActual = 2; // Pedido 3 (índice 2)
-            if (manifiestoActual != null && indicePedidoActual < manifiestoActual.pedidos.Count)
+            if (gestorTMS != null)
             {
-                var pedido3 = manifiestoActual.pedidos[indicePedidoActual];
-                directorioBodega.TryGetValue(pedido3.coordenada_bodega, out Transform destino);
-
-                if (gestorTMS != null)
-                {
-                    Transform muelleDestino = gestorTMS.ConsultarMuelleDestino(pedido3, out int numCamion, out int slot);
-                    robotAMR_02.zonaTransferencia = muelleDestino;
-                    robotAMR_02.numCamionAsignado = numCamion;
-                }
-
-                robotAMR_02.AsignarMision(pedido3, destino);
+                Transform muelleDestino = gestorTMS.ConsultarMuelleDestino(pedidoPendiente, out int numCamion, out int slot);
+                robotEjecutor.zonaTransferencia = muelleDestino;
+                robotEjecutor.numCamionAsignado = numCamion;
             }
 
-            // 3. Invoca DirectorCinematico.Instance?.RelevarRobotActivo(robotAMR_02)
+            robotEjecutor.AsignarMision(pedidoPendiente, destino);
+        }
+
+        // 4. Enviar evento de cámara al DirectorCinematico
+        if (robotAMR_02 != null)
+        {
             DirectorCinematico.Instance?.RelevarRobotActivo(robotAMR_02);
         }
 
-        // 4. Registra en el Dashboard
+        // 5. Registrar en el Dashboard
         string mensajeRelevo = "[RELEVO 24/7]: AMR-01 acoplado a carga inductiva (Pad 01). AMR-02 desplegado para Pedido 3.";
         DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8><b>{mensajeRelevo}</b></color>");
         Debug.Log($"<color=cyan>{mensajeRelevo}</color>");
@@ -290,5 +347,64 @@ public class RobotManagerEVE : MonoBehaviour
         {
             indiceWaypointActual = (indiceWaypointActual + 1) % waypoints.Length;
         }
+    }
+
+    public void InyectarObstaculoPasilloISO()
+    {
+        if (obstaculoPasilloISO != null)
+        {
+            RobotAMR robot = robotEjecutor != null ? robotEjecutor : robotAMR_01;
+            if (robot != null && (robot.estadoActual == RobotAMR.EstadoRobot.En_Transito || robot.estadoActual == RobotAMR.EstadoRobot.Transportando))
+            {
+                Vector3 dirFrente = robot.transform.forward;
+                Vector3 posObstaculo = robot.transform.position + dirFrente * 2.2f;
+                posObstaculo.y = robot.transform.position.y;
+
+                obstaculoPasilloISO.transform.position = posObstaculo;
+                if (dirFrente != Vector3.zero)
+                {
+                    obstaculoPasilloISO.transform.rotation = Quaternion.LookRotation(-dirFrente);
+                }
+            }
+
+            obstaculoPasilloISO.SetActive(true);
+            DashboardUI.Instance?.RegistrarLog("<color=#F59E0B>[STRESS TEST]:</color> Obstaculo imprevisto detectado en corredor principal.");
+        }
+        else
+        {
+            Debug.LogWarning("[EVE]: Referencia obstaculoPasilloISO no asignada para el Stress Test.");
+        }
+    }
+
+    public void GestionarObstruccionAutonomaISO(RobotAMR robotAfectado, GameObject obstaculoDetectado)
+    {
+        if (despachandoDespejeISO) return;
+        StartCoroutine(ProtocoloDespejeAutonomoISO(robotAfectado, obstaculoDetectado));
+    }
+
+    private IEnumerator ProtocoloDespejeAutonomoISO(RobotAMR robotAfectado, GameObject obstaculoDetectado)
+    {
+        despachandoDespejeISO = true;
+
+        string idRobot = robotAfectado != null ? robotAfectado.idRobot : "AMR";
+        DashboardUI.Instance?.RegistrarLog($"<color=#EF4444>[ISO 3691-4 CAT. 3]:</color> Bloqueo frontal a <0.85m. {idRobot} en parada de proteccion. EVE gestionando despeje...");
+
+        yield return new WaitForSeconds(3.5f);
+
+        // Solo se neutraliza el obstáculo ISO registrado (nunca racks u otra infraestructura estática)
+        if (obstaculoPasilloISO != null && obstaculoPasilloISO.activeSelf)
+        {
+            obstaculoPasilloISO.SetActive(false);
+        }
+        Debug.Log("<color=#10B981>[FLUJO]: 5. Obstáculo despejado por EVE. Retomando Pedido 2.</color>");
+
+        DashboardUI.Instance?.RegistrarLog($"<color=#10B981>[WMS - VIA LIBRE]:</color> Obstaculo neutralizado por EVE. Autorizando reanudacion de {idRobot}.");
+
+        if (robotAfectado != null)
+        {
+            robotAfectado.ReanudarTrasDespejeLiDAR();
+        }
+
+        despachandoDespejeISO = false;
     }
 }

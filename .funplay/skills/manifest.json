@@ -6,11 +6,11 @@
     "skillVersions": [
         {
             "id": "unity-mcp-workflow",
-            "version": "1.0.6"
+            "version": "1.0.8"
         },
         {
             "id": "unity-ui-composition",
-            "version": "1.0.8"
+            "version": "1.0.10"
         }
     ]
 }

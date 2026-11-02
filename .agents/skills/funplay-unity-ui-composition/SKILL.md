@@ -3,7 +3,7 @@ name: funplay-unity-ui-composition
 description: Build and revise Unity UI, primarily uGUI mobile page prefabs, with framework-aware routing, Sprite import safety, text effects, localization and visual verification.
 ---
 <!-- Funplay Unity MCP managed project skills -->
-<!-- Funplay Unity MCP skill version: unity-ui-composition@1.0.8 -->
+<!-- Funplay Unity MCP skill version: unity-ui-composition@1.0.10 -->
 
 # Unity UI Composition
 
@@ -14,6 +14,7 @@ Use this built-in skill when creating, assembling, adapting, reviewing, or fixin
 - Do not use computer use (desktop mouse/keyboard automation) to operate Unity unless necessary. When assembling, modifying, inspecting or validating UI, prefer Unity MCP whenever it can complete the step, including hierarchy/component/prefab reads and edits, compilation/Play state, clicks/scrolling, screenshots and recordings.
 - Check the connected project's tools/list and, when available, `get_tool_capabilities`. A tool missing from exposure, compilation/domain reload or a temporary disconnection is not evidence of a missing capability: check exposure/readiness and recover status first. Respect custom allowlists; do not widen exposure or use another interaction method to bypass restrictions.
 - Prefer specialized MCP tools; for project-specific gaps they do not cover, use a permitted, guarded `execute_code` call through Unity Editor APIs when it can perform the step reliably. Computer use is a fallback only for a confirmed MCP capability gap, or an explicit user request: explain the uncovered step before using it, limit it to that step, and return to MCP readback/validation when available. If recovery fails, report the connection blocker rather than silently switching methods or repeating uncertain mutations.
+- A confirmed blocking native Unity modal that MCP cannot dismiss is a narrow computer-use exception. Explain the modal and handle only that blocker, then return to MCP and recheck project identity, Editor state and the interrupted operation. Do not infer permission to save, discard, overwrite, install, authorize or accept security changes merely to unblock Unity; ask when the consequential choice is not already authorized. Never replay an uncertain mutation.
 - This routing applies to operating Unity, not ordinary source-file editing or viewing supplied design references and already-captured images/videos with appropriate file or media tools.
 
 ## Framework And Task Routing
@@ -167,6 +168,8 @@ These are original Funplay adaptations informed by the pinned Unity official plu
 - For a vertical ScrollRect, top-anchor the Content and set its pivot to the top so growth is predictable. Preserve the normalized position intentionally when refreshing content.
 - Use RectMask2D for rectangular viewports. Use Mask only when the clipping shape must follow a Graphic.
 - Give touch controls a project-defined minimum hit area even when the visible art is smaller. Use one transparent or visible root Graphic or raycast padding rather than making every child Image a target.
+- For legacy-input-only projects that need New Input System click/drag simulation, recommend `Active Input Handling = Both` after compatibility checks and user approval. Do not silently change input settings; `Both` does not make legacy `UnityEngine.Input` receive synthetic input. Read the workflow's execution-trust reference for setup and verification.
+- For background Play Mode verification, recommend enabling `Player > Run In Background` with user approval. Also check Input System background/focus policies: advancing frames and accepting input are separate requirements. Read the workflow's execution-trust reference; do not silently change persistent settings.
 - Add listeners once and remove them in the matching lifecycle. Disable interaction while entrance or exit animation makes a control visually unavailable.
 
 ## Animation And Prefab Safety
@@ -219,6 +222,6 @@ These are original Funplay adaptations informed by the pinned Unity official plu
 ## Metadata
 
 - Original skill id: `unity-ui-composition`
-- Skill version: `1.0.8`
+- Skill version: `1.0.10`
 - Platform: `antigravity`
 - Source repository: `https://github.com/FunplayAI/funplay-unity-mcp`
