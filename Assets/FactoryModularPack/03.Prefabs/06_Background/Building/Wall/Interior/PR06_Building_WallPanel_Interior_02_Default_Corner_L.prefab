@@ -1,0 +1,261 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &639941043757971421
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 639941043757971420}
+  m_Layer: 0
+  m_Name: PR06_Building_WallPanel_Interior_02_Default_Corner_L
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &639941043757971420
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 639941043757971421}
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children:
+  - {fileID: 1950144198339855073}
+  - {fileID: 5608095152807861881}
+  - {fileID: 4484525930768556918}
+  m_Father: {fileID: 0}
+  m_RootOrder: 0
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1001 &7661668907039593961
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    m_TransformParent: {fileID: 639941043757971420}
+    m_Modifications:
+    - target: {fileID: 8161642480401782536, guid: ba8f164261f71424d82661b65e533a34,
+        type: 3}
+      propertyPath: m_RootOrder
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 8161642480401782536, guid: ba8f164261f71424d82661b65e533a34,
+        type: 3}
+      propertyPath: m_LocalPosition.x
+      value: -0.0018157959
+      objectReference: {fileID: 0}
+    - target: {fileID: 8161642480401782536, guid: ba8f164261f71424d82661b65e533a34,
+        type: 3}
+      propertyPath: m_LocalPosition.y
+      value: 5
+      objectReference: {fileID: 0}
+    - target: {fileID: 8161642480401782536, guid: ba8f164261f71424d82661b65e533a34,
+        type: 3}
+      propertyPath: m_LocalPosition.z
+      value: -0.00000065505947
+      objectReference: {fileID: 0}
+    - target: {fileID: 8161642480401782536, guid: ba8f164261f71424d82661b65e533a34,
+        type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 8161642480401782536, guid: ba8f164261f71424d82661b65e533a34,
+        type: 3}
+      propertyPath: m_LocalRotation.x
+      value: -0
+      objectReference: {fileID: 0}
+    - target: {fileID: 8161642480401782536, guid: ba8f164261f71424d82661b65e533a34,
+        type: 3}
+      propertyPath: m_LocalRotation.y
+      value: -0
+      objectReference: {fileID: 0}
+    - target: {fileID: 8161642480401782536, guid: ba8f164261f71424d82661b65e533a34,
+        type: 3}
+      propertyPath: m_LocalRotation.z
+      value: -0
+      objectReference: {fileID: 0}
+    - target: {fileID: 8161642480401782536, guid: ba8f164261f71424d82661b65e533a34,
+        type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 8161642480401782536, guid: ba8f164261f71424d82661b65e533a34,
+        type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 8161642480401782536, guid: ba8f164261f71424d82661b65e533a34,
+        type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 8161642480401782543, guid: ba8f164261f71424d82661b65e533a34,
+        type: 3}
+      propertyPath: m_Name
+      value: PR06_Building_WallPanel_Interior_02_Mid_01_Corner_L
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: ba8f164261f71424d82661b65e533a34, type: 3}
+--- !u!4 &1950144198339855073 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 8161642480401782536, guid: ba8f164261f71424d82661b65e533a34,
+    type: 3}
+  m_PrefabInstance: {fileID: 7661668907039593961}
+  m_PrefabAsset: {fileID: 0}
+--- !u!1001 &7661668907663676010
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    m_TransformParent: {fileID: 639941043757971420}
+    m_Modifications:
+    - target: {fileID: 6084235371943440667, guid: c73bff97b343e8a48958c14fedc52a94,
+        type: 3}
+      propertyPath: m_Name
+      value: PR06_Building_WallPanel_Interior_02_Bottom_01_Corner_L
+      objectReference: {fileID: 0}
+    - target: {fileID: 6084235371943440668, guid: c73bff97b343e8a48958c14fedc52a94,
+        type: 3}
+      propertyPath: m_RootOrder
+      value: 2
+      objectReference: {fileID: 0}
+    - target: {fileID: 6084235371943440668, guid: c73bff97b343e8a48958c14fedc52a94,
+        type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6084235371943440668, guid: c73bff97b343e8a48958c14fedc52a94,
+        type: 3}
+      propertyPath: m_LocalPosition.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6084235371943440668, guid: c73bff97b343e8a48958c14fedc52a94,
+        type: 3}
+      propertyPath: m_LocalPosition.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6084235371943440668, guid: c73bff97b343e8a48958c14fedc52a94,
+        type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 6084235371943440668, guid: c73bff97b343e8a48958c14fedc52a94,
+        type: 3}
+      propertyPath: m_LocalRotation.x
+      value: -0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6084235371943440668, guid: c73bff97b343e8a48958c14fedc52a94,
+        type: 3}
+      propertyPath: m_LocalRotation.y
+      value: -0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6084235371943440668, guid: c73bff97b343e8a48958c14fedc52a94,
+        type: 3}
+      propertyPath: m_LocalRotation.z
+      value: -0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6084235371943440668, guid: c73bff97b343e8a48958c14fedc52a94,
+        type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6084235371943440668, guid: c73bff97b343e8a48958c14fedc52a94,
+        type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6084235371943440668, guid: c73bff97b343e8a48958c14fedc52a94,
+        type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: c73bff97b343e8a48958c14fedc52a94, type: 3}
+--- !u!4 &4484525930768556918 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 6084235371943440668, guid: c73bff97b343e8a48958c14fedc52a94,
+    type: 3}
+  m_PrefabInstance: {fileID: 7661668907663676010}
+  m_PrefabAsset: {fileID: 0}
+--- !u!1001 &7661668908512156628
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    m_TransformParent: {fileID: 639941043757971420}
+    m_Modifications:
+    - target: {fileID: 2846349265137452461, guid: e52f612632258e448b89a53119fd2560,
+        type: 3}
+      propertyPath: m_RootOrder
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 2846349265137452461, guid: e52f612632258e448b89a53119fd2560,
+        type: 3}
+      propertyPath: m_LocalPosition.x
+      value: -0.0018157959
+      objectReference: {fileID: 0}
+    - target: {fileID: 2846349265137452461, guid: e52f612632258e448b89a53119fd2560,
+        type: 3}
+      propertyPath: m_LocalPosition.y
+      value: 10.000001
+      objectReference: {fileID: 0}
+    - target: {fileID: 2846349265137452461, guid: e52f612632258e448b89a53119fd2560,
+        type: 3}
+      propertyPath: m_LocalPosition.z
+      value: -0.000001251106
+      objectReference: {fileID: 0}
+    - target: {fileID: 2846349265137452461, guid: e52f612632258e448b89a53119fd2560,
+        type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 2846349265137452461, guid: e52f612632258e448b89a53119fd2560,
+        type: 3}
+      propertyPath: m_LocalRotation.x
+      value: -0
+      objectReference: {fileID: 0}
+    - target: {fileID: 2846349265137452461, guid: e52f612632258e448b89a53119fd2560,
+        type: 3}
+      propertyPath: m_LocalRotation.y
+      value: -0
+      objectReference: {fileID: 0}
+    - target: {fileID: 2846349265137452461, guid: e52f612632258e448b89a53119fd2560,
+        type: 3}
+      propertyPath: m_LocalRotation.z
+      value: -0
+      objectReference: {fileID: 0}
+    - target: {fileID: 2846349265137452461, guid: e52f612632258e448b89a53119fd2560,
+        type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 2846349265137452461, guid: e52f612632258e448b89a53119fd2560,
+        type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 2846349265137452461, guid: e52f612632258e448b89a53119fd2560,
+        type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 2846349265137452462, guid: e52f612632258e448b89a53119fd2560,
+        type: 3}
+      propertyPath: m_Name
+      value: PR06_Building_WallPanel_Interior_02_Top_01_Corner_L
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: e52f612632258e448b89a53119fd2560, type: 3}
+--- !u!4 &5608095152807861881 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 2846349265137452461, guid: e52f612632258e448b89a53119fd2560,
+    type: 3}
+  m_PrefabInstance: {fileID: 7661668908512156628}
+  m_PrefabAsset: {fileID: 0}

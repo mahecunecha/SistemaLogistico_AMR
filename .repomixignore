@@ -1,0 +1,21 @@
+# Archivos de metadatos de Unity (vitales para Git, inútiles para la IA)
+*.meta
+
+# Archivos YAML gigantes generados por Unity
+*.unity
+*.prefab
+*.asset
+*.mat
+*.anim
+*.controller
+*.overrideController
+*.physicMaterial
+*.physicsMaterial2D
+*.guiskin
+*.flare
+*.renderTexture
+*.mixer
+
+# Paquetes de Unity y configuraciones (opcional, pero recomendado)
+Packages/
+ProjectSettings/
