@@ -73,7 +73,12 @@ public class ModuloDespachoTMS : MonoBehaviour
         numeroCamion = 1;
         if (pedido != null)
         {
-            // Regla de ruteo TMS Módulo 5:
+            // Regla forzada temporal (Llenado Concentrado LIFO):
+            // Todos los pedidos del manifiesto.json se envían al Camión 1 (muelleCamion01)
+            // para apilar las 3 estibas en los Slots 1, 2 y 3 del Camión 1.
+            numeroCamion = 1;
+
+            /* Regla de ruteo TMS Módulo 5 (Desactivada temporalmente para validación LIFO):
             // Pedido 1 (AGU-RUB-330): Camión 1 (Ruta Nacional)
             // Pedido 2 (CLU-NEG-330): Camión 2 (Ruta Metropolitana)
             // Pedido 3 (OKT-BAR-50L, 920 kg): Camión 3 (Ruta Express / Carga Pesada)
@@ -89,6 +94,7 @@ public class ModuloDespachoTMS : MonoBehaviour
             {
                 numeroCamion = 3;
             }
+            */
         }
 
         switch (numeroCamion)
@@ -174,12 +180,25 @@ public class ModuloDespachoTMS : MonoBehaviour
 
             int indiceLIFO = pilaObjetivo.Count;
             float zOffset = (indiceLIFO - 2) * 1.6f;
-            float ySuperficie = 3.23f; // Superficie superior exacta del camión
+
+            // Calibración al ras del Suelo_Falso_NavMesh del camión (maxY = 1.813f en lugar del techo 3.23f)
+            Transform sueloFalso = muelleTransform.parent != null ? muelleTransform.parent.Find("Suelo_Falso_NavMesh") : null;
+            float ySuperficie = 1.813f;
+            float zCentroCarga = muelleTransform.position.z;
+            float xCentroCarga = muelleTransform.position.x;
+
+            if (sueloFalso != null)
+            {
+                Collider colSuelo = sueloFalso.GetComponent<Collider>();
+                ySuperficie = colSuelo != null ? colSuelo.bounds.max.y : (sueloFalso.position.y + 0.066f);
+                zCentroCarga = sueloFalso.position.z;
+                xCentroCarga = sueloFalso.position.x;
+            }
 
             Vector3 posicionLIFO = new Vector3(
-                muelleTransform.position.x,
+                xCentroCarga,
                 ySuperficie,
-                muelleTransform.position.z + zOffset
+                zCentroCarga + zOffset
             );
 
             palletFisico.transform.position = posicionLIFO;
