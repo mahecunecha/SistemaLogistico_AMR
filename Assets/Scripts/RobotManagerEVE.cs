@@ -11,8 +11,20 @@ public class RobotManagerEVE : MonoBehaviour
     public Transform[] waypoints;
     public float velocidadVuelo = 5f;
     private int indiceWaypointActual = 0;
-    private Vector3 velocidadActualEVE;
-    private float smoothTime = 0.6f;
+
+    [Header("Arquitectura Energética WMS (IEC 61508)")]
+    // EVE opera como Orquestador Maestro SIL-3 alimentado por Bus Aéreo PoE++ 48V DC continuo.
+    // Disponibilidad 24/7 garantizada sin degradación química de celda, evitando Single Point of Failure.
+    [Tooltip("Bus Aéreo PoE++ 48V DC Activo — Disponibilidad 24/7 Garantizada")]
+    public string estadoAlimentacionWMS = "Bus Aéreo PoE++ 48V DC Activo — Disponibilidad 24/7 Garantizada";
+
+    [Header("Confinamiento Aéreo Espacial (AABB)")]
+    public const float LimiteXMin = -38.0f;
+    public const float LimiteXMax = 52.0f;
+    public const float AltitudMin = 9.2f;
+    public const float AltitudMax = 10.5f;
+    public const float LimiteZMin = -43.0f;
+    public const float LimiteZMax = -7.5f;
 
     [Header("Integración TMS (Módulo 5)")]
     public ModuloDespachoTMS gestorTMS;
@@ -109,6 +121,7 @@ public class RobotManagerEVE : MonoBehaviour
             robotEjecutor.AsignarMision(pedido, destino);
         }
         DashboardUI.Instance?.RegistrarLog("<color=green>[WMS]:</color> Turno de despacho nocturno iniciado.");
+        DashboardUI.Instance?.RegistrarLog("<color=#38BDF8>[WMS ENERGÍA]:</color> Bus Aéreo PoE++ 48V DC Activo — Disponibilidad 24/7 Garantizada.");
     }
 
     void CargarManifiesto()
@@ -215,11 +228,11 @@ public class RobotManagerEVE : MonoBehaviour
                 robotEjecutor.numCamionAsignado = numCamion;
             }
 
+            OnMisionEvaluada?.Invoke();
             if (robotEjecutor != null)
             {
                 robotEjecutor.AsignarMision(pedido, destino);
             }
-            OnMisionEvaluada?.Invoke();
         }
         else
         {
@@ -242,12 +255,13 @@ public class RobotManagerEVE : MonoBehaviour
             robotEjecutor.numCamionAsignado = numCamion;
         }
 
-        robotEjecutor.AsignarMision(pedido, destino);
         OnMisionEvaluada?.Invoke();
+        robotEjecutor.AsignarMision(pedido, destino);
     }
 
     private IEnumerator SecuenciaSaltoTemporal()
     {
+        OnMisionEvaluada?.Invoke();
         Debug.Log("<color=#10B981>[FLUJO]: 2. Pedido 1 Entregado. Iniciando Time-Lapse Logístico (7 horas).</color>");
         DashboardUI.Instance?.RegistrarLog("<color=#F59E0B><b>[TIME-LAPSE LOGÍSTICO]:</b> Avanzando 7 horas de turno continuo. Simulando fatiga de flota...</color>");
         DashboardUI.Instance?.ActualizarBannerTurno("<b><color=#38BDF8>TURNO NOCTURNO:</color> Hora 7.5/8 (Bloque Final) | Química: <color=#F59E0B>LiFePO4</color> (80% - 20%)</b>");
@@ -283,14 +297,20 @@ public class RobotManagerEVE : MonoBehaviour
     {
         DashboardUI.Instance?.MostrarEmergencia(false);
 
-        // 1. Desvincular AMR-01 nombrando a AMR-02 como nuevo robotEjecutor
+        // 1. Enviar evento de relevo al DirectorCinematico antes de alterar estados para desuscribir AMR-01 inmediatamente
+        if (robotAMR_02 != null)
+        {
+            DirectorCinematico.Instance?.RelevarRobotActivo(robotAMR_02);
+        }
+
+        // 2. Desvincular AMR-01 nombrando a AMR-02 como nuevo robotEjecutor
         RobotAMR robotSaliente = robotAMR_01 != null ? robotAMR_01 : robotEjecutor;
         if (robotAMR_02 != null)
         {
             robotEjecutor = robotAMR_02;
         }
 
-        // 2. Enviar AMR-01 a estación de carga inductiva (Pad_Inductivo_01) limpiando su estado
+        // 3. Enviar AMR-01 a estación de carga inductiva (Pad_Inductivo_01) limpiando su estado
         if (robotSaliente != null && robotSaliente != robotAMR_02)
         {
             Vector3 destinoPad01 = new Vector3(-10.0f, 0.25f, -10.0f);
@@ -300,7 +320,7 @@ public class RobotManagerEVE : MonoBehaviour
             robotSaliente.EnviarACargaInductiva(destinoPad01);
         }
 
-        // 3. Asignar la misión pendiente al nuevo robotEjecutor (AMR-02)
+        // 4. Asignar la misión pendiente al nuevo robotEjecutor (AMR-02)
         if (robotEjecutor != null && manifiestoActual != null && indicePedidoActual < manifiestoActual.pedidos.Count)
         {
             var pedidoPendiente = manifiestoActual.pedidos[indicePedidoActual];
@@ -316,12 +336,6 @@ public class RobotManagerEVE : MonoBehaviour
             robotEjecutor.AsignarMision(pedidoPendiente, destino);
         }
 
-        // 4. Enviar evento de cámara al DirectorCinematico
-        if (robotAMR_02 != null)
-        {
-            DirectorCinematico.Instance?.RelevarRobotActivo(robotAMR_02);
-        }
-
         // 5. Registrar en el Dashboard
         string mensajeRelevo = "[RELEVO 24/7]: AMR-01 acoplado a carga inductiva (Pad 01). AMR-02 desplegado para Pedido 3.";
         DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8><b>{mensajeRelevo}</b></color>");
@@ -334,7 +348,13 @@ public class RobotManagerEVE : MonoBehaviour
 
         Transform destino = waypoints[indiceWaypointActual];
         if (destino == null) return;
-        transform.position = Vector3.SmoothDamp(transform.position, destino.position, ref velocidadActualEVE, smoothTime, velocidadVuelo);
+
+        // Vuelo matemático determinista acotado por AABB industrial (Zero-Physics)
+        Vector3 siguientePos = Vector3.MoveTowards(transform.position, destino.position, velocidadVuelo * Time.deltaTime);
+        siguientePos.x = Mathf.Clamp(siguientePos.x, LimiteXMin, LimiteXMax);
+        siguientePos.y = Mathf.Clamp(siguientePos.y, AltitudMin, AltitudMax);
+        siguientePos.z = Mathf.Clamp(siguientePos.z, LimiteZMin, LimiteZMax);
+        transform.position = siguientePos;
         
         Vector3 direccion = (destino.position - transform.position).normalized;
         if (direccion != Vector3.zero)
