@@ -256,7 +256,7 @@ public class RobotManagerEVE : MonoBehaviour
         if (amr != null)
         {
             float bateriaInicial = amr.bateriaActual;
-            float bateriaObjetivo = 26.5f;
+            float bateriaObjetivo = 22.20f;
             float duracion = 2.0f;
             float tiempo = 0f;
 

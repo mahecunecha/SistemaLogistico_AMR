@@ -1,5 +1,5 @@
 <!-- Funplay Unity MCP managed project skills -->
-<!-- Funplay Unity MCP skill version: unity-ui-composition@1.0.10 -->
+<!-- Funplay Unity MCP skill version: unity-ui-composition@1.0.11 -->
 
 # TMP Fonts, Effects And Localization
 

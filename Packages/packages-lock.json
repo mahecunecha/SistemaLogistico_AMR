@@ -1,14 +1,15 @@
 {
   "dependencies": {
     "com.gamebooom.unity.mcp": {
-      "version": "https://github.com/FunplayAI/funplay-unity-mcp.git#v0.7.3",
+      "version": "https://github.com/FunplayAI/funplay-unity-mcp.git#v0.7.5",
       "depth": 0,
       "source": "git",
       "dependencies": {
         "com.unity.nuget.newtonsoft-json": "3.2.1",
-        "com.unity.inputsystem": "1.7.0"
+        "com.unity.inputsystem": "1.7.0",
+        "com.unity.ugui": "1.0.0"
       },
-      "hash": "b7ed08f0345fb83b10b5be92a3632437185577b2"
+      "hash": "fd877d429eca4c0a34fab9121ef3e0fa17c616d2"
     },
     "com.unity.ai.navigation": {
       "version": "1.1.7",
@@ -128,9 +129,9 @@
       "depth": 1,
       "source": "registry",
       "dependencies": {
-        "com.unity.settings-manager": "1.0.3",
         "com.unity.mathematics": "1.2.1",
-        "com.unity.modules.imgui": "1.0.0"
+        "com.unity.modules.imgui": "1.0.0",
+        "com.unity.settings-manager": "1.0.3"
       },
       "url": "https://packages.unity.com"
     },

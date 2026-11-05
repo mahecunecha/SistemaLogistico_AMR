@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
 
@@ -15,9 +16,9 @@ public class RobotAMR : MonoBehaviour
 
     [Header("Telemetría Batería")]
     public float bateriaActual = 80.0f;
-    public float coeficienteVacio = 0.012f;
-    public float coeficienteCarga = 0.024f;
-    public float consumoIdle = 0.01f;
+    public float coeficienteVacio = 0.0020f;
+    public float coeficienteCarga = 0.00158f;
+    public float consumoIdle = 0.0010f;
 
     [Header("Throttling Telemetría")]
     private float tiempoProximoEnvioTelemetria = 0f;
@@ -34,8 +35,29 @@ public class RobotAMR : MonoBehaviour
     private EstadoRobot estadoPrevioBloqueo = EstadoRobot.Inactivo;
 
     private float velocidadBase = 3.5f;
-    private float aceleracionBase = 8.0f;
+    private float aceleracionBase = 20.0f;
     private float coeficientePeso = 0.002f;
+
+    [Header("Cinemática Industrial (ISO 3691-4)")]
+    public const float RadioAgenteIndustrial = 0.60f;
+    public const float VelocidadAngularIndustrial = 720.0f;
+
+    [Header("Control de Tráfico Industrial (Mutex ISO 3691-4)")]
+    private static readonly Dictionary<Transform, RobotAMR> zonasReservadasMutex = new Dictionary<Transform, RobotAMR>();
+    private const float DistanciaCompuertaMutex = 3.5f;
+    private const float RadioOcupacionFisicaMutex = 2.5f;
+    private bool enEsperaMutex = false;
+
+    [Header("Enrutamiento Ortogonal (VDA 5050)")]
+    public const float ZAvenidaOeste = -32.0f;
+    public const float ZAvenidaEste = -34.0f;
+    public const float XPorticoSalidaNorte = 34.40f;
+    public const float XPorticoEntradaSur = 32.60f;
+    public const float ZUmbralPortico = -48.0f;
+    public const float DesfaseCarrilRack = 0.46f;
+    public const float UmbralPasoWaypoint = 0.65f;
+    private readonly Queue<Vector3> colaWaypoints = new Queue<Vector3>();
+    private readonly List<Vector3> bufferNodosRuta = new List<Vector3>();
 
     [Header("Panel de Control (Solo lectura)")]
     public EstadoRobot estadoActual = EstadoRobot.Inactivo;
@@ -60,39 +82,400 @@ public class RobotAMR : MonoBehaviour
     {
         agente = GetComponent<NavMeshAgent>();
         if (managerEVE == null) managerEVE = FindFirstObjectByType<RobotManagerEVE>();
+
+        if (agente != null)
+        {
+            agente.radius = RadioAgenteIndustrial;
+            agente.angularSpeed = VelocidadAngularIndustrial;
+            agente.acceleration = aceleracionBase;
+            agente.stoppingDistance = 0.0f;
+            agente.autoBraking = true;
+        }
+
+        ActualizarJerarquiaNavegacion();
+    }
+
+    void OnDisable()
+    {
+        enEsperaMutex = false;
+        colaWaypoints.Clear();
+        LiberarMutexDeRobot(this);
+    }
+
+    void OnDestroy()
+    {
+        enEsperaMutex = false;
+        colaWaypoints.Clear();
+        LiberarMutexDeRobot(this);
+    }
+
+    public void ActualizarJerarquiaNavegacion()
+    {
+        if (agente == null) return;
+
+        int offsetDesempate = ((!string.IsNullOrEmpty(idRobot) && idRobot.EndsWith("02")) || gameObject.name.Contains("02")) ? 1 : 0;
+
+        switch (estadoActual)
+        {
+            case EstadoRobot.Extrayendo:
+            case EstadoRobot.Entregando:
+            case EstadoRobot.Interrumpido:
+                agente.avoidancePriority = 10 + offsetDesempate;
+                agente.obstacleAvoidanceType = ObstacleAvoidanceType.NoObstacleAvoidance;
+                break;
+
+            case EstadoRobot.Transportando:
+                agente.avoidancePriority = 20 + offsetDesempate;
+                agente.obstacleAvoidanceType = ObstacleAvoidanceType.MedQualityObstacleAvoidance;
+                break;
+
+            case EstadoRobot.En_Transito:
+                agente.avoidancePriority = 50 + offsetDesempate;
+                agente.obstacleAvoidanceType = ObstacleAvoidanceType.MedQualityObstacleAvoidance;
+                break;
+
+            case EstadoRobot.Recargando:
+                agente.avoidancePriority = 80 + offsetDesempate;
+                agente.obstacleAvoidanceType = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
+                break;
+
+            case EstadoRobot.Inactivo:
+            default:
+                agente.avoidancePriority = 90 + offsetDesempate;
+                agente.obstacleAvoidanceType = ObstacleAvoidanceType.LowQualityObstacleAvoidance;
+                break;
+        }
+    }
+
+    private bool IntentarReservarZonaMutex(Transform zona)
+    {
+        if (zona == null) return true;
+
+        if (zonasReservadasMutex.TryGetValue(zona, out RobotAMR propietario))
+        {
+            if (propietario == null || !propietario.gameObject.activeInHierarchy ||
+                propietario.estadoActual == EstadoRobot.Inactivo || propietario.estadoActual == EstadoRobot.Recargando)
+            {
+                zonasReservadasMutex.Remove(zona);
+            }
+            else if (propietario != this)
+            {
+                return false;
+            }
+        }
+
+        if (managerEVE != null)
+        {
+            RobotAMR otroRobot = (managerEVE.robotAMR_01 != null && managerEVE.robotAMR_01 != this) ? managerEVE.robotAMR_01 :
+                                 ((managerEVE.robotAMR_02 != null && managerEVE.robotAMR_02 != this) ? managerEVE.robotAMR_02 : null);
+
+            if (otroRobot != null && otroRobot.gameObject.activeInHierarchy && otroRobot.estadoActual != EstadoRobot.Inactivo)
+            {
+                Vector3 puntoRef = (agente != null && agente.hasPath) ? agente.pathEndPosition : zona.position;
+                Vector2 posOtroXZ = new Vector2(otroRobot.transform.position.x, otroRobot.transform.position.z);
+                Vector2 posRefXZ = new Vector2(puntoRef.x, puntoRef.z);
+
+                if (Vector2.Distance(posOtroXZ, posRefXZ) < RadioOcupacionFisicaMutex)
+                {
+                    return false;
+                }
+            }
+        }
+
+        zonasReservadasMutex[zona] = this;
+        return true;
+    }
+
+    private void LiberarZonaMutex(Transform zona, RobotAMR propietario)
+    {
+        if (zona == null) return;
+        if (zonasReservadasMutex.TryGetValue(zona, out RobotAMR actual) && actual == propietario)
+        {
+            zonasReservadasMutex.Remove(zona);
+        }
+    }
+
+    private static void LiberarMutexDeRobot(RobotAMR robot)
+    {
+        if (robot == null || zonasReservadasMutex.Count == 0) return;
+
+        List<Transform> clavesALiberar = null;
+        foreach (var kvp in zonasReservadasMutex)
+        {
+            if (kvp.Value == null || kvp.Value == robot)
+            {
+                if (clavesALiberar == null) clavesALiberar = new List<Transform>();
+                clavesALiberar.Add(kvp.Key);
+            }
+        }
+
+        if (clavesALiberar != null)
+        {
+            for (int i = 0; i < clavesALiberar.Count; i++)
+            {
+                zonasReservadasMutex.Remove(clavesALiberar[i]);
+            }
+        }
+    }
+
+    private void GestionarCompuertaMutex()
+    {
+        if (enParadaSeguridadLiDAR || estadoActual == EstadoRobot.Interrumpido) return;
+
+        if (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando)
+        {
+            Transform objetivo = (estadoActual == EstadoRobot.En_Transito) ? destinoActual : zonaTransferencia;
+
+            // Liberar cualquier cerrojo previo que ya no sea el objetivo activo si el robot ya salió del radio físico
+            if (zonasReservadasMutex.Count > 0)
+            {
+                List<Transform> obsoletas = null;
+                Vector2 posActualXZ = new Vector2(transform.position.x, transform.position.z);
+                foreach (var kvp in zonasReservadasMutex)
+                {
+                    if (kvp.Value == this && kvp.Key != null && kvp.Key != objetivo)
+                    {
+                        Vector2 posZonaXZ = new Vector2(kvp.Key.position.x, kvp.Key.position.z);
+                        if (Vector2.Distance(posActualXZ, posZonaXZ) > RadioOcupacionFisicaMutex)
+                        {
+                            if (obsoletas == null) obsoletas = new List<Transform>();
+                            obsoletas.Add(kvp.Key);
+                        }
+                    }
+                }
+                if (obsoletas != null)
+                {
+                    for (int i = 0; i < obsoletas.Count; i++) zonasReservadasMutex.Remove(obsoletas[i]);
+                }
+            }
+
+            if (objetivo != null && agente != null && colaWaypoints.Count == 0 && !agente.pathPending)
+            {
+                if (agente.remainingDistance <= DistanciaCompuertaMutex &&
+                    DistanciaPlanaADestinoAgente() <= DistanciaCompuertaMutex + 0.25f)
+                {
+                    if (!IntentarReservarZonaMutex(objetivo))
+                    {
+                        if (!enEsperaMutex)
+                        {
+                            enEsperaMutex = true;
+                            agente.isStopped = true;
+                            agente.velocity = Vector3.zero;
+                        }
+                    }
+                    else if (enEsperaMutex)
+                    {
+                        enEsperaMutex = false;
+                        agente.isStopped = false;
+                    }
+                }
+                else if (enEsperaMutex)
+                {
+                    enEsperaMutex = false;
+                    agente.isStopped = false;
+                }
+            }
+        }
+        else
+        {
+            enEsperaMutex = false;
+        }
+    }
+
+    private Vector3 AjustarPuntoNavMesh(Vector3 punto)
+    {
+        if (NavMesh.SamplePosition(punto, out NavMeshHit hit, 5.0f, NavMesh.AllAreas))
+        {
+            return hit.position;
+        }
+        return punto;
+    }
+
+    public float ResolverEjeCarrilX(Vector3 posicion, out Vector3 puntoCarrilNavMesh)
+    {
+        Vector3 baseNav = posicion;
+        if (NavMesh.SamplePosition(posicion, out NavMeshHit hit, 5.0f, NavMesh.AllAreas))
+        {
+            baseNav = hit.position;
+        }
+
+        float dx = baseNav.x - posicion.x;
+        float xCarril = baseNav.x;
+        if (Mathf.Abs(dx) > 0.15f)
+        {
+            xCarril = baseNav.x + Mathf.Sign(dx) * DesfaseCarrilRack;
+        }
+
+        Vector3 candidato = new Vector3(xCarril, baseNav.y, baseNav.z);
+        if (NavMesh.SamplePosition(candidato, out NavMeshHit hitCarril, 2.0f, NavMesh.AllAreas))
+        {
+            puntoCarrilNavMesh = hitCarril.position;
+        }
+        else
+        {
+            puntoCarrilNavMesh = baseNav;
+        }
+
+        return puntoCarrilNavMesh.x;
+    }
+
+    private static void AgregarNodoRuta(List<Vector3> nodos, Vector3 candidato, bool esDestinoFinal = false)
+    {
+        if (nodos.Count == 0)
+        {
+            nodos.Add(candidato);
+            return;
+        }
+
+        Vector3 ultimo = nodos[nodos.Count - 1];
+        Vector2 ultimoXZ = new Vector2(ultimo.x, ultimo.z);
+        Vector2 candXZ = new Vector2(candidato.x, candidato.z);
+
+        if (Vector2.Distance(ultimoXZ, candXZ) > 0.25f)
+        {
+            nodos.Add(candidato);
+        }
+        else if (esDestinoFinal && nodos.Count > 1)
+        {
+            nodos[nodos.Count - 1] = candidato;
+        }
+    }
+
+    private void ConstruirNodosManhattan(Vector3 origen, Vector3 destino, List<Vector3> nodos)
+    {
+        nodos.Clear();
+
+        float xOrigen = ResolverEjeCarrilX(origen, out Vector3 origenNav);
+        float xDestino = ResolverEjeCarrilX(destino, out Vector3 destinoNav);
+
+        bool origenEnSalaCarga = origen.z < ZUmbralPortico;
+        bool destinoEnSalaCarga = destino.z < ZUmbralPortico;
+
+        // Caso 1: Ambos puntos dentro de la Sala de Carga
+        if (origenEnSalaCarga && destinoEnSalaCarga)
+        {
+            AgregarNodoRuta(nodos, origenNav);
+            if (Mathf.Abs(origenNav.x - destinoNav.x) > 0.25f && Mathf.Abs(origenNav.z - destinoNav.z) > 0.25f)
+            {
+                AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(destinoNav.x, destinoNav.y, origenNav.z)));
+            }
+            AgregarNodoRuta(nodos, destinoNav, true);
+            return;
+        }
+
+        // Caso 2: Ambos puntos en el mismo pasillo / muelle de la nave principal (sin cruzar pórtico)
+        if (!origenEnSalaCarga && !destinoEnSalaCarga && Mathf.Abs(xOrigen - xDestino) <= 0.5f)
+        {
+            AgregarNodoRuta(nodos, origenNav);
+            AgregarNodoRuta(nodos, destinoNav, true);
+            return;
+        }
+
+        float xSalidaAvenida = origenEnSalaCarga ? XPorticoSalidaNorte : xOrigen;
+        float xEntradaAvenida = destinoEnSalaCarga ? XPorticoEntradaSur : xDestino;
+
+        // Selección de carril direccional en la Avenida Transversal:
+        // -32.0f para flujos hacia el Oeste (Izquierda), -34.0f para flujos hacia el Este (Derecha)
+        float zAvenida = (xEntradaAvenida < xSalidaAvenida) ? ZAvenidaOeste : ZAvenidaEste;
+
+        AgregarNodoRuta(nodos, origenNav);
+
+        // 1. Salida hacia la Avenida Principal
+        if (origenEnSalaCarga)
+        {
+            AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(XPorticoSalidaNorte, origenNav.y, origenNav.z)));
+            AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(XPorticoSalidaNorte, origenNav.y, zAvenida)));
+        }
+        else
+        {
+            AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(xOrigen, origenNav.y, zAvenida)));
+        }
+
+        // 2. Transición por la Avenida y Entrada al Destino
+        if (destinoEnSalaCarga)
+        {
+            AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(XPorticoEntradaSur, destinoNav.y, zAvenida)));
+            AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(XPorticoEntradaSur, destinoNav.y, destinoNav.z)));
+            AgregarNodoRuta(nodos, destinoNav, true);
+        }
+        else
+        {
+            AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(xDestino, destinoNav.y, zAvenida)));
+            AgregarNodoRuta(nodos, destinoNav, true);
+        }
+    }
+
+    private void TrazarRutaOrtogonal(Vector3 destinoFinal)
+    {
+        if (agente == null) return;
+
+        colaWaypoints.Clear();
+        ConstruirNodosManhattan(transform.position, destinoFinal, bufferNodosRuta);
+
+        for (int i = 1; i < bufferNodosRuta.Count; i++)
+        {
+            colaWaypoints.Enqueue(bufferNodosRuta[i]);
+        }
+
+        if (colaWaypoints.Count > 0)
+        {
+            Vector3 primerWaypoint = colaWaypoints.Dequeue();
+            agente.autoBraking = (colaWaypoints.Count == 0);
+            agente.SetDestination(primerWaypoint);
+        }
+        else
+        {
+            ResolverEjeCarrilX(destinoFinal, out Vector3 destinoNav);
+            agente.autoBraking = true;
+            agente.SetDestination(destinoNav);
+        }
+    }
+
+    private float DistanciaPlanaADestinoAgente()
+    {
+        if (agente == null) return float.MaxValue;
+        Vector2 posXZ = new Vector2(transform.position.x, transform.position.z);
+        Vector2 destXZ = new Vector2(agente.destination.x, agente.destination.z);
+        return Vector2.Distance(posXZ, destXZ);
+    }
+
+    private bool AvanzarColaWaypoints()
+    {
+        if (agente == null || enParadaSeguridadLiDAR || enEsperaMutex || estadoActual == EstadoRobot.Interrumpido) return false;
+        if (colaWaypoints.Count == 0) return false;
+
+        if (!agente.pathPending &&
+            agente.remainingDistance <= UmbralPasoWaypoint &&
+            DistanciaPlanaADestinoAgente() <= UmbralPasoWaypoint + 0.25f)
+        {
+            Vector3 siguienteWaypoint = colaWaypoints.Dequeue();
+            agente.autoBraking = (colaWaypoints.Count == 0);
+            agente.SetDestination(siguienteWaypoint);
+            return true;
+        }
+        return false;
     }
 
     private float CalcularDistanciaNavMesh(Vector3 origen, Vector3 destino)
     {
-        Vector3 origenNav = origen;
-        Vector3 destinoNav = destino;
+        List<Vector3> nodos = new List<Vector3>(8);
+        ConstruirNodosManhattan(origen, destino, nodos);
 
-        if (NavMesh.SamplePosition(origen, out NavMeshHit hitOrigen, 5.0f, NavMesh.AllAreas))
-        {
-            origenNav = hitOrigen.position;
-        }
-        if (NavMesh.SamplePosition(destino, out NavMeshHit hitDestino, 5.0f, NavMesh.AllAreas))
-        {
-            destinoNav = hitDestino.position;
-        }
-
-        NavMeshPath path = new NavMeshPath();
-        if (NavMesh.CalculatePath(origenNav, destinoNav, NavMesh.AllAreas, path) && path.corners.Length > 1)
+        if (nodos.Count > 1)
         {
             float distanciaTotal = 0f;
-            for (int i = 0; i < path.corners.Length - 1; i++)
+            for (int i = 0; i < nodos.Count - 1; i++)
             {
-                distanciaTotal += Vector3.Distance(path.corners[i], path.corners[i + 1]);
+                Vector2 a = new Vector2(nodos[i].x, nodos[i].z);
+                Vector2 b = new Vector2(nodos[i + 1].x, nodos[i + 1].z);
+                distanciaTotal += Vector2.Distance(a, b);
             }
             return distanciaTotal;
         }
-        else
-        {
-            // Fallback topológico en plano XZ si el agente o destino no están resueltos sobre la malla
-            Vector3 dif = destino - origen;
-            dif.y = 0f;
-            return dif.magnitude;
-        }
+
+        Vector3 dif = destino - origen;
+        dif.y = 0f;
+        return dif.magnitude;
     }
 
     [Header("Batería Industrial LiFePO4")]
@@ -166,6 +549,7 @@ public class RobotAMR : MonoBehaviour
             DashboardUI.Instance?.RegistrarLog($"<color=red>[ALERTA PREDICTIVA] Misión inviable. Retorno proyectado: {bateriaProyectada:F1}% (Umbral LiFePO4: {UmbralSeguridadLiFePO4:F0}%). Detención preventiva.</color>");
             DashboardUI.Instance?.MostrarEmergencia(true, bateriaProyectada, 3.2f);
             estadoActual = EstadoRobot.Interrumpido;
+            ActualizarJerarquiaNavegacion();
             OnEstadoCambiado?.Invoke(estadoActual);
             if (agente != null) agente.isStopped = true;
             return;
@@ -173,13 +557,17 @@ public class RobotAMR : MonoBehaviour
 
         DashboardUI.Instance?.ActualizarEstadoManifiesto(managerEVE.indicePedidoActual, "EN TRÁNSITO", Color.yellow);
         destinoActual = destinoFisico;
+        enEsperaMutex = false;
         estadoActual = EstadoRobot.En_Transito;
+        ActualizarJerarquiaNavegacion();
         OnEstadoCambiado?.Invoke(estadoActual);
 
+        agente.radius = RadioAgenteIndustrial;
+        agente.angularSpeed = VelocidadAngularIndustrial;
         agente.speed = velocidadBase;
         agente.acceleration = aceleracionBase;
 
-        agente.SetDestination(destinoActual.position); // Da la orden de moverse
+        TrazarRutaOrtogonal(destinoActual.position); // Da la orden de moverse por rieles VDA 5050
         Debug.Log("<color=cyan>AMR Desplegado:</color> Viajando a " + destinoFisico.name + " para buscar " + pedidoActual.codigo_sku);
         DashboardUI.Instance?.RegistrarLog("AMR Desplegado: Viajando a " + destinoFisico.name);
     }
@@ -191,21 +579,28 @@ public class RobotAMR : MonoBehaviour
         // Limpieza estricta de corrutinas y memoria de la misión abortada para evitar extracciones fantasma
         StopAllCoroutines();
         enParadaSeguridadLiDAR = false;
+        enEsperaMutex = false;
         obstaculoDetectado = false;
+        colaWaypoints.Clear();
+        LiberarMutexDeRobot(this);
         pedidoActual = null;
         destinoActual = null;
         zonaTransferencia = null;
+
+        estadoActual = EstadoRobot.Recargando;
+        ActualizarJerarquiaNavegacion();
 
         if (agente != null)
         {
             agente.isStopped = false;
             agente.ResetPath();
+            agente.radius = RadioAgenteIndustrial;
+            agente.angularSpeed = VelocidadAngularIndustrial;
             agente.speed = velocidadBase;
             agente.acceleration = aceleracionBase;
-            agente.SetDestination(posicionPad);
+            TrazarRutaOrtogonal(posicionPad);
         }
 
-        estadoActual = EstadoRobot.Recargando;
         OnEstadoCambiado?.Invoke(estadoActual);
         Debug.Log($"<color=green>[CARGA INDUCTIVA]:</color> {gameObject.name} navegando a Pad de carga en {posicionPad}");
         DashboardUI.Instance?.RegistrarLog($"<color=green>[CARGA INDUCTIVA]:</color> {gameObject.name} navegando a Pad de recarga.");
@@ -214,7 +609,9 @@ public class RobotAMR : MonoBehaviour
     public void EjecutarOverride()
     {
         DashboardUI.Instance?.MostrarEmergencia(false);
+        enEsperaMutex = false;
         estadoActual = EstadoRobot.En_Transito;
+        ActualizarJerarquiaNavegacion();
         if (agente != null) agente.isStopped = false;
         
         modoDegradacionActivo = true;
@@ -223,7 +620,7 @@ public class RobotAMR : MonoBehaviour
 
         if (destinoActual != null)
         {
-            agente.SetDestination(destinoActual.position);
+            TrazarRutaOrtogonal(destinoActual.position);
         }
         
         OnEstadoCambiado?.Invoke(estadoActual);
@@ -243,19 +640,24 @@ public class RobotAMR : MonoBehaviour
 
         StopAllCoroutines();
         enParadaSeguridadLiDAR = false;
+        enEsperaMutex = false;
         obstaculoDetectado = false;
+        colaWaypoints.Clear();
+        LiberarMutexDeRobot(this);
         pedidoActual = null;
         destinoActual = null;
         zonaTransferencia = null;
 
         if (agente != null)
         {
+            agente.autoBraking = true;
             agente.isStopped = true;
             agente.ResetPath();
             agente.velocity = Vector3.zero;
         }
 
         estadoActual = EstadoRobot.Inactivo;
+        ActualizarJerarquiaNavegacion();
         OnEstadoCambiado?.Invoke(estadoActual);
 
         if (managerEVE != null)
@@ -271,10 +673,11 @@ public class RobotAMR : MonoBehaviour
         enParadaSeguridadLiDAR = false;
         obstaculoDetectado = false;
         estadoActual = estadoPrevioBloqueo;
+        ActualizarJerarquiaNavegacion();
 
         if (agente != null)
         {
-            agente.isStopped = false;
+            agente.isStopped = enEsperaMutex;
         }
 
         OnEstadoCambiado?.Invoke(estadoActual);
@@ -364,6 +767,9 @@ public class RobotAMR : MonoBehaviour
             agente.isStopped = false;
         }
 
+        // Liberar reserva del rack extraído al iniciar retorno hacia muelle
+        LiberarZonaMutex(destinoActual, this);
+
         // Consultar o validar muelle de destino en ModuloDespachoTMS al iniciar retorno
         if (managerEVE != null && managerEVE.gestorTMS != null)
         {
@@ -378,13 +784,15 @@ public class RobotAMR : MonoBehaviour
         
         if (zonaTransferencia != null)
         {
+            enEsperaMutex = false;
             estadoActual = EstadoRobot.Transportando;
+            ActualizarJerarquiaNavegacion();
             OnEstadoCambiado?.Invoke(estadoActual);
 
             agente.speed = ObtenerVelocidadNominal();
             agente.acceleration = Mathf.Max(1.0f, aceleracionBase - (pedidoActual.peso_kg * coeficientePeso * 2f));
 
-            agente.SetDestination(zonaTransferencia.position);
+            TrazarRutaOrtogonal(zonaTransferencia.position);
             Debug.Log("<color=cyan>AMR Retornando:</color> Llevando estiba a la Zona de Transferencia (" + zonaTransferencia.name + ").");
             DashboardUI.Instance?.RegistrarLog("AMR Retornando: Llevando estiba a " + zonaTransferencia.name);
         }
@@ -397,7 +805,10 @@ public class RobotAMR : MonoBehaviour
 
     IEnumerator ProcesoEntrega()
     {
+        enEsperaMutex = false;
+        colaWaypoints.Clear();
         estadoActual = EstadoRobot.Entregando;
+        ActualizarJerarquiaNavegacion();
         OnEstadoCambiado?.Invoke(estadoActual);
 
         DashboardUI.Instance?.ActualizarEstadoManifiesto(managerEVE.indicePedidoActual, "ENTREGADO", Color.green);
@@ -433,7 +844,9 @@ public class RobotAMR : MonoBehaviour
             agente.isStopped = false;
         }
 
+        LiberarMutexDeRobot(this);
         estadoActual = EstadoRobot.Inactivo;
+        ActualizarJerarquiaNavegacion();
         OnEstadoCambiado?.Invoke(estadoActual);
 
         agente.speed = velocidadBase;
@@ -546,6 +959,7 @@ public class RobotAMR : MonoBehaviour
                     }
 
                     estadoActual = EstadoRobot.Interrumpido;
+                    ActualizarJerarquiaNavegacion();
                     OnEstadoCambiado?.Invoke(estadoActual);
 
                     if (managerEVE == null) managerEVE = FindFirstObjectByType<RobotManagerEVE>();
@@ -604,14 +1018,23 @@ public class RobotAMR : MonoBehaviour
         // Procesamiento activo del sensor LiDAR con Docking Mute (ISO 3691-4)
         ProcesarSensoresLiDAR();
 
-        // Consumo pasivo obligatorio por encendido de sistemas lógicos (blindado a 0% en parada de seguridad/interrupción)
-        if (!enParadaSeguridadLiDAR && estadoActual != EstadoRobot.Interrumpido)
+        // Transición fluida entre tramos ortogonales (VDA 5050) sin parada en esquinas intermedias
+        bool cambioTramoWaypoint = AvanzarColaWaypoints();
+
+        // Gestión de exclusión mutua (Mutex) de zona de acople a <= 3.5m en el tramo final
+        if (!cambioTramoWaypoint)
+        {
+            GestionarCompuertaMutex();
+        }
+
+        // Consumo pasivo obligatorio por encendido de sistemas lógicos (blindado a 0% en parada de seguridad/interrupción/espera Mutex)
+        if (!enParadaSeguridadLiDAR && !enEsperaMutex && estadoActual != EstadoRobot.Interrumpido)
         {
             bateriaActual -= consumoIdle * Time.deltaTime;
         }
 
         // Matemáticas de Batería (Termodinámica Inyectada)
-        if (!enParadaSeguridadLiDAR && estadoActual != EstadoRobot.Interrumpido && (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando))
+        if (!enParadaSeguridadLiDAR && !enEsperaMutex && estadoActual != EstadoRobot.Interrumpido && (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando))
         {
             float distanciaRecorrida = agente.velocity.magnitude * Time.deltaTime;
             if (distanciaRecorrida > 0)
@@ -642,6 +1065,7 @@ public class RobotAMR : MonoBehaviour
                 agente.velocity = Vector3.zero;
             }
             estadoActual = EstadoRobot.Interrumpido;
+            ActualizarJerarquiaNavegacion();
             OnEstadoCambiado?.Invoke(estadoActual);
             DashboardUI.Instance?.RegistrarLog("<color=red><b>[FALLO CATASTRÓFICO]:</b> Celda agotada al 0% en pasillo. Unidad inmovilizada.</color>");
             Debug.LogError("[FALLO CATASTRÓFICO] Batería agotada al 0% en pasillo. NavMeshAgent inmovilizado.");
@@ -656,11 +1080,14 @@ public class RobotAMR : MonoBehaviour
             DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
         }
 
+        if (cambioTramoWaypoint || colaWaypoints.Count > 0) return;
+
         if (estadoActual == EstadoRobot.En_Transito)
         {
-            if (!agente.pathPending && agente.remainingDistance <= 1.0f)
+            if (!enEsperaMutex && !agente.pathPending && agente.remainingDistance <= 1.0f && DistanciaPlanaADestinoAgente() <= 1.25f)
             {
                 estadoActual = EstadoRobot.Extrayendo;
+                ActualizarJerarquiaNavegacion();
                 OnEstadoCambiado?.Invoke(estadoActual);
                 Debug.Log("<color=yellow>Destino Alcanzado:</color> Extrayendo estiba de " + pedidoActual.peso_kg + " kg.");
                 DashboardUI.Instance?.RegistrarLog("Destino Alcanzado: Extrayendo estiba.");
@@ -670,14 +1097,14 @@ public class RobotAMR : MonoBehaviour
         else if (estadoActual == EstadoRobot.Transportando)
         {
             // CRI-01 y MED-04: Detección estandarizada NavMesh y desacople temporal en corrutina
-            if (zonaTransferencia != null && !agente.pathPending && agente.remainingDistance <= 1.0f)
+            if (!enEsperaMutex && zonaTransferencia != null && !agente.pathPending && agente.remainingDistance <= 1.0f && DistanciaPlanaADestinoAgente() <= 1.25f)
             {
                 StartCoroutine(ProcesoEntrega());
             }
         }
         else if (estadoActual == EstadoRobot.Recargando)
         {
-            if (!agente.pathPending && agente.remainingDistance <= 0.5f)
+            if (!agente.pathPending && agente.remainingDistance <= 0.5f && DistanciaPlanaADestinoAgente() <= 0.75f)
             {
                 // Llegó al pad de inducción. Frenar y recargar progresivamente.
                 agente.isStopped = true;
