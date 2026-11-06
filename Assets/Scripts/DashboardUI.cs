@@ -16,6 +16,12 @@ public class DashboardUI : MonoBehaviour
     [SerializeField] private Component textoLogTMP;
     [Tooltip("Asigna aquí el Text heredado si no usas TMPro.")]
     [SerializeField] private Text textoLogLegacy;
+    [Tooltip("ScrollRect de la consola de EVE con nacimiento inferior (Bottom-Up).")]
+    public ScrollRect scrollTerminalEVE;
+
+    [Header("Time-Lapse Industrial (Compresión Temporal)")]
+    public GameObject panelOverlayTimeLapse;
+    public TextMeshProUGUI txtOverlayTimeLapse;
 
     [System.Serializable]
     public class SlotTelemetriaAMR
@@ -197,8 +203,8 @@ public class DashboardUI : MonoBehaviour
     }
 
     private Queue<string> logQueue = new Queue<string>();
-    private const int MaxLineas = 5;
-    private StringBuilder stringBuilderLog = new StringBuilder(250);
+    private const int MaxLineas = 60;
+    private StringBuilder stringBuilderLog = new StringBuilder(4096);
 
     void Awake()
     {
@@ -235,7 +241,47 @@ public class DashboardUI : MonoBehaviour
             barraBateriaRelleno.fillAmount = 0.80f;
         }
 
+        if (panelOverlayTimeLapse != null)
+        {
+            panelOverlayTimeLapse.SetActive(false);
+        }
+
+        if (textoLogTMP is TMP_Text tmpLog)
+        {
+            tmpLog.alignment = TextAlignmentOptions.BottomLeft;
+        }
+        if (textoLogLegacy != null)
+        {
+            textoLogLegacy.alignment = TextAnchor.LowerLeft;
+        }
+
         ActualizarBannerTurno("<b><color=#38BDF8>TURNO NOCTURNO:</color> Hora 1/8 (Operación Nominal) | Química: <color=#F59E0B>LiFePO4</color> (80% - 20%)</b>");
+    }
+
+    public void MostrarOverlayTimeLapse(bool mostrar)
+    {
+        if (panelOverlayTimeLapse != null)
+        {
+            panelOverlayTimeLapse.SetActive(mostrar);
+        }
+    }
+
+    public void ActualizarProgresoTimeLapse(float t)
+    {
+        t = Mathf.Clamp01(t);
+        float minutosTotales = Mathf.Lerp(30f, 330f, t); // 00:30 AM (30m) -> 05:30 AM (330m)
+        int horasReloj = Mathf.FloorToInt(minutosTotales / 60f);
+        int minsReloj = Mathf.FloorToInt(minutosTotales % 60f);
+        float horaTurno = Mathf.Lerp(1.0f, 7.5f, t);
+
+        string cronometroTurno = $"{horasReloj:00}:{minsReloj:00} AM (Hora {horaTurno:F1}/8) — SIMULANDO FATIGA OPERATIVA DE FLOTA";
+
+        if (txtOverlayTimeLapse != null)
+        {
+            txtOverlayTimeLapse.text = $"<b><color=#F59E0B>[COMPRESIÓN TEMPORAL]</color>  <color=#38BDF8>{horasReloj:00}:{minsReloj:00} AM (Hora {horaTurno:F1}/8)</color> — SIMULANDO FATIGA OPERATIVA DE FLOTA</b>";
+        }
+
+        ActualizarBannerTurno($"<b><color=#F59E0B>TIME-LAPSE:</color> {cronometroTurno}</b>");
     }
 
     public void ActualizarBannerTurno(string texto)
@@ -276,6 +322,17 @@ public class DashboardUI : MonoBehaviour
         }
 
         ActualizarVisual();
+
+        if (scrollTerminalEVE != null)
+        {
+            Canvas.ForceUpdateCanvases();
+            if (scrollTerminalEVE.content != null)
+            {
+                LayoutRebuilder.ForceRebuildLayoutImmediate(scrollTerminalEVE.content);
+            }
+            Canvas.ForceUpdateCanvases();
+            scrollTerminalEVE.verticalNormalizedPosition = 0f;
+        }
     }
 
     private void ActualizarVisual()

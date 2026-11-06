@@ -215,6 +215,70 @@ public class DirectorCinematico : MonoBehaviour
         }
     }
 
+    private Coroutine rutinaTimeLapseActiva;
+
+    public void EjecutarBarridoTimeLapse(float duracion)
+    {
+        if (rutinaTimeLapseActiva != null)
+        {
+            StopCoroutine(rutinaTimeLapseActiva);
+        }
+        rutinaTimeLapseActiva = StartCoroutine(RutinaBarridoTimeLapse(duracion));
+    }
+
+    private IEnumerator RutinaBarridoTimeLapse(float duracion)
+    {
+        if (vcam0_Intro == null)
+        {
+            yield break;
+        }
+
+        float tiempoTotal = Mathf.Max(0.1f, duracion);
+        float tiempo = 0f;
+
+        // Travelling panorámico elevado a Y = 11.5f recorriendo la nave central
+        Vector3 puntoInicio = new Vector3(-22.0f, 11.5f, -31.0f);
+        Vector3 puntoFin = new Vector3(30.0f, 11.5f, -12.0f);
+        Vector3 centroPasillos = new Vector3(5.0f, 3.5f, -21.5f);
+
+        vcam0_Intro.transform.position = puntoInicio;
+        Vector3 posInicialEVE = managerEVE != null ? managerEVE.transform.position : new Vector3(-10.0f, 9.5f, -21.5f);
+        Vector3 focoInicial = Vector3.Lerp(centroPasillos, posInicialEVE, 0.55f);
+        if ((focoInicial - puntoInicio).sqrMagnitude > 0.01f)
+        {
+            vcam0_Intro.transform.rotation = Quaternion.LookRotation((focoInicial - puntoInicio).normalized, Vector3.up);
+        }
+
+        vcam0_Intro.Priority = 25;
+        Debug.Log("<color=orange>Director:</color> Iniciando barrido aéreo Time-Lapse en VCam0_Intro (Priority = 25, Y = 11.5f).");
+
+        while (tiempo < tiempoTotal)
+        {
+            tiempo += Time.deltaTime;
+            float tNorm = Mathf.Clamp01(tiempo / tiempoTotal);
+            float tSuave = Mathf.SmoothStep(0f, 1f, tNorm);
+
+            Vector3 posCam = Vector3.Lerp(puntoInicio, puntoFin, tSuave);
+            posCam.y = 11.5f;
+            vcam0_Intro.transform.position = posCam;
+
+            Vector3 posEVEActual = managerEVE != null ? managerEVE.transform.position : posInicialEVE;
+            Vector3 puntoMirada = Vector3.Lerp(centroPasillos, posEVEActual, 0.55f);
+            Vector3 dirMirada = puntoMirada - posCam;
+            if (dirMirada.sqrMagnitude > 0.01f)
+            {
+                Quaternion rotObjetivo = Quaternion.LookRotation(dirMirada.normalized, Vector3.up);
+                vcam0_Intro.transform.rotation = Quaternion.Slerp(vcam0_Intro.transform.rotation, rotObjetivo, Time.deltaTime * 4.0f);
+            }
+
+            yield return null;
+        }
+
+        vcam0_Intro.Priority = 0;
+        rutinaTimeLapseActiva = null;
+        Debug.Log("<color=orange>Director:</color> Barrido aéreo Time-Lapse finalizado (VCam0_Intro Priority = 0).");
+    }
+
     public void RelevarRobotActivo(RobotAMR nuevoRobot)
     {
         if (robotAMR != null) robotAMR.OnEstadoCambiado -= EvaluarEstadoAMR;

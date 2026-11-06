@@ -12,10 +12,15 @@ public class GeneradorTablaManifiesto : MonoBehaviour
     public void PoblarTabla(List<Pedido> pedidosJSON)
     {
         // 1. Limpieza de seguridad: Borrar filas viejas si el JSON se recarga
-        // (Empezamos desde el índice 1 para no borrar la Fila_Titulos que está en el índice 0)
-        for (int i = 1; i < contenedorFilas.childCount; i++)
+        // (Preservando Header_Manifiesto y Fila_Titulos en la parte superior)
+        for (int i = contenedorFilas.childCount - 1; i >= 0; i--)
         {
-            Destroy(contenedorFilas.GetChild(i).gameObject);
+            Transform child = contenedorFilas.GetChild(i);
+            if (child.name == "Header_Manifiesto" || child.name == "Fila_Titulos")
+            {
+                continue;
+            }
+            Destroy(child.gameObject);
         }
 
         DashboardUI.Instance.textosEstadoManifiesto.Clear();
