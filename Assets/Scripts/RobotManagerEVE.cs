@@ -263,15 +263,18 @@ public class RobotManagerEVE : MonoBehaviour
     {
         OnMisionEvaluada?.Invoke();
         Debug.Log("<color=#10B981>[FLUJO]: 2. Pedido 1 Entregado. Iniciando Time-Lapse Logístico (7 horas).</color>");
-        DashboardUI.Instance?.RegistrarLog("<color=#F59E0B><b>[TIME-LAPSE LOGÍSTICO]:</b> Avanzando 7 horas de turno continuo. Simulando fatiga de flota...</color>");
-        DashboardUI.Instance?.ActualizarBannerTurno("<b><color=#38BDF8>TURNO NOCTURNO:</color> Hora 7.5/8 (Bloque Final) | Química: <color=#F59E0B>LiFePO4</color> (80% - 20%)</b>");
+        DashboardUI.Instance?.RegistrarLog("<color=#F59E0B><b>[TIME-LAPSE LOGÍSTICO]:</b> Avanzando 7 horas de turno continuo (00:30 AM -> 05:30 AM). Simulando fatiga de flota...</color>");
+
+        float duracion = 3.5f;
+        DirectorCinematico.Instance?.EjecutarBarridoTimeLapse(duracion);
+        DashboardUI.Instance?.MostrarOverlayTimeLapse(true);
+        DashboardUI.Instance?.ActualizarProgresoTimeLapse(0f);
 
         RobotAMR amr = robotAMR_01 != null ? robotAMR_01 : robotEjecutor;
         if (amr != null)
         {
             float bateriaInicial = amr.bateriaActual;
             float bateriaObjetivo = 22.20f;
-            float duracion = 2.0f;
             float tiempo = 0f;
 
             while (tiempo < duracion)
@@ -280,14 +283,30 @@ public class RobotManagerEVE : MonoBehaviour
                 float t = Mathf.Clamp01(tiempo / duracion);
                 amr.bateriaActual = Mathf.Lerp(bateriaInicial, bateriaObjetivo, t);
                 DashboardUI.Instance?.ActualizarBateria(amr.idRobot, amr.bateriaActual / 100f, amr.estadoActual);
+                DashboardUI.Instance?.ActualizarProgresoTimeLapse(t);
                 yield return null;
             }
 
             amr.bateriaActual = bateriaObjetivo;
             DashboardUI.Instance?.ActualizarBateria(amr.idRobot, amr.bateriaActual / 100f, amr.estadoActual);
         }
+        else
+        {
+            float tiempo = 0f;
+            while (tiempo < duracion)
+            {
+                tiempo += Time.deltaTime;
+                float t = Mathf.Clamp01(tiempo / duracion);
+                DashboardUI.Instance?.ActualizarProgresoTimeLapse(t);
+                yield return null;
+            }
+        }
+
+        DashboardUI.Instance?.ActualizarProgresoTimeLapse(1f);
+        DashboardUI.Instance?.ActualizarBannerTurno("<b><color=#38BDF8>TURNO NOCTURNO:</color> Hora 7.5/8 (Bloque Final) | Química: <color=#F59E0B>LiFePO4</color> (80% - 20%)</b>");
 
         yield return new WaitForSeconds(0.5f);
+        DashboardUI.Instance?.MostrarOverlayTimeLapse(false);
 
         Debug.Log("<color=#10B981>[FLUJO]: 3. Time-Lapse completado. Despachando Pedido 2. (PRESIONA 'O' AHORA PARA EMERGENCIA LiDAR)</color>");
         DespacharPedido(indicePedidoActual);
