@@ -4,5 +4,8 @@
 EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
-  m_Scenes: []
+  m_Scenes:
+  - enabled: 1
+    path: Assets/_ProyectoBodega/Escenas/Bodega_TurnoNocturno.unity
+    guid: 338201f03ccb79e27a05c6e59053a6de
   m_configObjects: {}
