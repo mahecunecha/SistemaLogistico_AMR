@@ -38,6 +38,7 @@ public class RobotManagerEVE : MonoBehaviour
     public RobotAMR robotEjecutor;
     public int indicePedidoActual = 0;
     public bool turnoIniciado = false;
+    private bool relevo24_7Activo = false;
     private Dictionary<string, Transform> directorioBodega = new Dictionary<string, Transform>();
 
     [Header("Trazabilidad LIFO Camión")]
@@ -172,9 +173,9 @@ public class RobotManagerEVE : MonoBehaviour
                 // Desemparentar del AMR preservando escala de mundo
                 palletFisico.transform.SetParent(null, true);
 
-                // Cuadrícula LIFO: acomodar a lo largo del eje Z del camión
+                // Cuadrícula LIFO: acomodar a lo largo del eje Z del camión (de fondo a frente)
                 int indiceLIFO = matrizLIFOCamion.Count; // 1, 2, 3...
-                float zOffset = (indiceLIFO - 2) * 1.6f;
+                float zOffset = (2 - indiceLIFO) * 1.6f;
                 float ySuperficie = zonaCamionTransform.position.y + 1.55f;
 
                 Vector3 posicionLIFO = new Vector3(
@@ -201,6 +202,23 @@ public class RobotManagerEVE : MonoBehaviour
             {
                 StartCoroutine(SecuenciaSaltoTemporal());
                 return;
+            }
+
+            if (relevo24_7Activo && robotAMR_02 != null)
+            {
+                robotEjecutor = robotAMR_02;
+            }
+            else if (robotEjecutor != null && robotEjecutor.estadoActual == RobotAMR.EstadoRobot.Recargando)
+            {
+                if (robotAMR_02 != null && robotAMR_02.estadoActual != RobotAMR.EstadoRobot.Recargando)
+                {
+                    robotEjecutor = robotAMR_02;
+                }
+                else
+                {
+                    Debug.LogWarning($"[EVE]: Despacho bloqueado — {robotEjecutor.idRobot} se encuentra en estado Recargando.");
+                    return;
+                }
             }
 
             DespacharPedido(indicePedidoActual);
@@ -243,7 +261,16 @@ public class RobotManagerEVE : MonoBehaviour
 
     private void DespacharPedido(int indice)
     {
+        if (relevo24_7Activo && robotAMR_02 != null)
+        {
+            robotEjecutor = robotAMR_02;
+        }
         if (manifiestoActual == null || indice >= manifiestoActual.pedidos.Count || robotEjecutor == null) return;
+        if (robotEjecutor.estadoActual == RobotAMR.EstadoRobot.Recargando)
+        {
+            Debug.LogWarning($"[EVE]: Bloqueado despacho hacia {robotEjecutor.idRobot} porque se encuentra en estado Recargando.");
+            return;
+        }
 
         var pedido = manifiestoActual.pedidos[indice];
         directorioBodega.TryGetValue(pedido.coordenada_bodega, out Transform destino);
@@ -324,6 +351,7 @@ public class RobotManagerEVE : MonoBehaviour
 
         // 2. Desvincular AMR-01 nombrando a AMR-02 como nuevo robotEjecutor
         RobotAMR robotSaliente = robotAMR_01 != null ? robotAMR_01 : robotEjecutor;
+        relevo24_7Activo = true;
         if (robotAMR_02 != null)
         {
             robotEjecutor = robotAMR_02;

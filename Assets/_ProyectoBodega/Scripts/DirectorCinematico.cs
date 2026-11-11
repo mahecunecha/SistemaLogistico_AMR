@@ -363,6 +363,49 @@ public class DirectorCinematico : MonoBehaviour
         }
     }
 
+    private int indiceCamaraSCADA = 0;
+
+    /// <summary>
+    /// Alterna manualmente entre las cámaras tácticas principales (VCam1, VCam2, VCam3) desde la botonera SCADA.
+    /// </summary>
+    public void CiclarCamaraSCADA()
+    {
+        var ciclo = new (CinemachineCamera cam, string nombre)[]
+        {
+            (vcam1_Menu, "VCam1 (Vista General / Menu)"),
+            (vcam2_EVE, "VCam2 (Supervisión EVE)"),
+            (vcam3_AMR_Hombro, "VCam3 (Seguimiento AMR)")
+        };
+
+        for (int i = 0; i < ciclo.Length; i++)
+        {
+            if (ciclo[i].cam != null && ciclo[i].cam.Priority > 0)
+            {
+                indiceCamaraSCADA = i;
+                break;
+            }
+        }
+
+        for (int intento = 0; intento < ciclo.Length; intento++)
+        {
+            indiceCamaraSCADA = (indiceCamaraSCADA + 1) % ciclo.Length;
+            var objetivo = ciclo[indiceCamaraSCADA];
+            if (objetivo.cam == null) continue;
+
+            if (objetivo.cam == vcam3_AMR_Hombro && managerEVE != null && managerEVE.robotEjecutor != null)
+            {
+                robotAMR = managerEVE.robotEjecutor;
+                vcam3_AMR_Hombro.Target.TrackingTarget = managerEVE.robotEjecutor.transform;
+            }
+
+            DesactivarPrioridades();
+            objetivo.cam.Priority = 10;
+            Debug.Log($"<color=orange>Director [SCADA]:</color> Cambio manual a {objetivo.nombre}.");
+            DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[CÁMARA SCADA]:</color> Enfoque en {objetivo.nombre}.");
+            return;
+        }
+    }
+
     private void DesactivarPrioridades()
     {
         if (vcam0_Intro != null) vcam0_Intro.Priority = 0;

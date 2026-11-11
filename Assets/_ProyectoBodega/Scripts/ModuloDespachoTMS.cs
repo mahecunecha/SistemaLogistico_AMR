@@ -132,6 +132,48 @@ public class ModuloDespachoTMS : MonoBehaviour
         }
     }
 
+    public int ObtenerSlotLIFOProyectado(int numeroCamion)
+    {
+        switch (numeroCamion)
+        {
+            case 1: return matrizLIFOCamion1.Count + 1;
+            case 2: return matrizLIFOCamion2.Count + 1;
+            case 3: return matrizLIFOCamion3.Count + 1;
+            default: return matrizLIFOCamion1.Count + 1;
+        }
+    }
+
+    public Vector3 ObtenerCoordenadaSlotLIFO(int numeroCamion, int slotLIFOProyectado)
+    {
+        Transform muelleTransform = ObtenerTransformMuelle(numeroCamion);
+        if (muelleTransform == null) return Vector3.zero;
+
+        // Inversión LIFO física (Flatbed):
+        // Slot 1 al fondo (Z = +1.6m -> 9.49m), Slot 2 al centro (Z = 0m -> 7.89m), Slot 3 cerca de rampa (Z = -1.6m -> 6.29m)
+        float zOffset = (2 - slotLIFOProyectado) * 1.6f;
+
+        Transform sueloFalso = muelleTransform.parent != null ? muelleTransform.parent.Find("Suelo_Falso_NavMesh") : null;
+        float ySuperficie = 1.813f;
+        float zCentroCarga = muelleTransform.position.z;
+        float xCentroCarga = muelleTransform.position.x;
+
+        if (sueloFalso != null)
+        {
+            Collider colSuelo = sueloFalso.GetComponent<Collider>();
+            ySuperficie = colSuelo != null ? colSuelo.bounds.max.y : (sueloFalso.position.y + 0.066f);
+            zCentroCarga = sueloFalso.position.z;
+            xCentroCarga = sueloFalso.position.x;
+        }
+
+        return new Vector3(xCentroCarga, ySuperficie, zCentroCarga + zOffset);
+    }
+
+    public Vector3 ObtenerCoordenadaSlotActivo(int numeroCamion)
+    {
+        int slotProyectado = ObtenerSlotLIFOProyectado(numeroCamion);
+        return ObtenerCoordenadaSlotLIFO(numeroCamion, slotProyectado);
+    }
+
     public void RegistrarEstibaEnCamion(int numeroCamion, Pedido pedido, GameObject palletFisico)
     {
         if (pedido == null) return;
@@ -179,7 +221,7 @@ public class ModuloDespachoTMS : MonoBehaviour
             palletFisico.transform.SetParent(null, true);
 
             int indiceLIFO = pilaObjetivo.Count;
-            float zOffset = (indiceLIFO - 2) * 1.6f;
+            float zOffset = (2 - indiceLIFO) * 1.6f;
 
             // Calibración al ras del Suelo_Falso_NavMesh del camión (maxY = 1.813f en lugar del techo 3.23f)
             Transform sueloFalso = muelleTransform.parent != null ? muelleTransform.parent.Find("Suelo_Falso_NavMesh") : null;
