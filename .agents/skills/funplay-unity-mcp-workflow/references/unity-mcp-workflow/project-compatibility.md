@@ -1,5 +1,5 @@
 <!-- Funplay Unity MCP managed project skills -->
-<!-- Funplay Unity MCP skill version: unity-mcp-workflow@1.0.9 -->
+<!-- Funplay Unity MCP skill version: unity-mcp-workflow@1.0.10 -->
 
 # Project Compatibility And Package Readiness
 

@@ -149,8 +149,8 @@ public class ModuloDespachoTMS : MonoBehaviour
         if (muelleTransform == null) return Vector3.zero;
 
         // Inversión LIFO física (Flatbed):
-        // Slot 1 al fondo (Z = +1.6m -> 9.49m), Slot 2 al centro (Z = 0m -> 7.89m), Slot 3 cerca de rampa (Z = -1.6m -> 6.29m)
-        float zOffset = (2 - slotLIFOProyectado) * 1.6f;
+        // Slot 1 al fondo (Z = +1.70m -> 9.593m), Slot 2 al centro (Z = 0m -> 7.893m), Slot 3 cerca de rampa (Z = -1.70m -> 6.193m)
+        float zOffset = (2 - slotLIFOProyectado) * 1.70f;
 
         Transform sueloFalso = muelleTransform.parent != null ? muelleTransform.parent.Find("Suelo_Falso_NavMesh") : null;
         float ySuperficie = 1.813f;
@@ -221,7 +221,7 @@ public class ModuloDespachoTMS : MonoBehaviour
             palletFisico.transform.SetParent(null, true);
 
             int indiceLIFO = pilaObjetivo.Count;
-            float zOffset = (2 - indiceLIFO) * 1.6f;
+            float zOffset = (2 - indiceLIFO) * 1.70f;
 
             // Calibración al ras del Suelo_Falso_NavMesh del camión (maxY = 1.813f en lugar del techo 3.23f)
             Transform sueloFalso = muelleTransform.parent != null ? muelleTransform.parent.Find("Suelo_Falso_NavMesh") : null;

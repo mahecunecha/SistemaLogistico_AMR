@@ -3,7 +3,7 @@ name: funplay-unity-mcp-workflow
 description: Efficient workflow for using Unity MCP to edit, import, compile, inspect, and test Unity projects, including screenshot and Game View recording verification.
 ---
 <!-- Funplay Unity MCP managed project skills -->
-<!-- Funplay Unity MCP skill version: unity-mcp-workflow@1.0.9 -->
+<!-- Funplay Unity MCP skill version: unity-mcp-workflow@1.0.10 -->
 
 # Unity MCP Workflow
 
@@ -288,6 +288,6 @@ Use `capture_game_view` for static layout or a single visual state. Use `record_
 ## Metadata
 
 - Original skill id: `unity-mcp-workflow`
-- Skill version: `1.0.9`
+- Skill version: `1.0.10`
 - Platform: `antigravity`
 - Source repository: `https://github.com/FunplayAI/funplay-unity-mcp`

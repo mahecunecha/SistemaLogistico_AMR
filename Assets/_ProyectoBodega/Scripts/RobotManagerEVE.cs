@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 using System.IO;
 using System.Collections;
@@ -52,11 +53,13 @@ public class RobotManagerEVE : MonoBehaviour
 
     [Header("Simulacion de Incertidumbre ISO 3691-4")]
     public GameObject obstaculoPasilloISO;
+    public DronMantenimiento dronMantenimiento;
     private bool despachandoDespejeISO = false;
 
     void Awake()
     {
         if (gestorTMS == null) gestorTMS = FindFirstObjectByType<ModuloDespachoTMS>();
+        if (dronMantenimiento == null) dronMantenimiento = FindFirstObjectByType<DronMantenimiento>();
         if (robotAMR_01 == null)
         {
             GameObject r1 = GameObject.Find("Robot_AMR");
@@ -225,8 +228,7 @@ public class RobotManagerEVE : MonoBehaviour
         }
         else
         {
-            Debug.Log("<color=green>Operación Finalizada:</color> Manifiesto Nocturno completado. No hay más pedidos.");
-            DashboardUI.Instance?.RegistrarLog("Operación Finalizada: Manifiesto completado.");
+            FinalizarTurnoYRetornarACarga("<color=green>Operación Finalizada:</color> Manifiesto Nocturno completado. Retornando a estación de carga inductiva.");
         }
     }
 
@@ -254,9 +256,29 @@ public class RobotManagerEVE : MonoBehaviour
         }
         else
         {
-            Debug.Log("<color=green>Operación Finalizada:</color> Manifiesto Nocturno completado (Con Reprogramaciones).");
-            DashboardUI.Instance?.RegistrarLog("<color=green>Operación Finalizada:</color> Manifiesto Nocturno completado (Con Reprogramaciones).");
+            FinalizarTurnoYRetornarACarga("<color=green>Operación Finalizada:</color> Manifiesto Nocturno completado (Con Reprogramaciones). Retornando a estación de carga inductiva.");
         }
+    }
+
+    private void FinalizarTurnoYRetornarACarga(string mensajeCierre)
+    {
+        turnoIniciado = false;
+        Debug.Log(mensajeCierre);
+        DashboardUI.Instance?.RegistrarLog(mensajeCierre);
+
+        if (robotEjecutor != null && robotEjecutor.estadoActual != RobotAMR.EstadoRobot.Recargando)
+        {
+            bool esUnidad02 = (robotEjecutor == robotAMR_02) ||
+                              (!string.IsNullOrEmpty(robotEjecutor.idRobot) && robotEjecutor.idRobot.EndsWith("02"));
+            string nombrePad = esUnidad02 ? "Pad_Inductivo_02" : "Pad_Inductivo_01";
+            Vector3 posPadFallback = esUnidad02 ? new Vector3(38.13f, 0.25886f, -54.66f) : new Vector3(28.86f, 0.25886f, -54.91f);
+
+            GameObject goPad = GameObject.Find(nombrePad);
+            Vector3 destinoPad = goPad != null ? goPad.transform.position : posPadFallback;
+            robotEjecutor.EnviarACargaInductiva(destinoPad);
+        }
+
+        DirectorCinematico.Instance?.ActivarVistaGeneralFinDeTurno();
     }
 
     private void DespacharPedido(int indice)
@@ -301,7 +323,7 @@ public class RobotManagerEVE : MonoBehaviour
         if (amr != null)
         {
             float bateriaInicial = amr.bateriaActual;
-            float bateriaObjetivo = 22.20f;
+            float bateriaObjetivo = 21.93f;
             float tiempo = 0f;
 
             while (tiempo < duracion)
@@ -420,18 +442,19 @@ public class RobotManagerEVE : MonoBehaviour
     {
         if (obstaculoPasilloISO != null)
         {
+            obstaculoPasilloISO.transform.SetParent(null, true);
+            Collider col = obstaculoPasilloISO.GetComponent<Collider>();
+            if (col != null) col.enabled = true;
+
             RobotAMR robot = robotEjecutor != null ? robotEjecutor : robotAMR_01;
             if (robot != null && (robot.estadoActual == RobotAMR.EstadoRobot.En_Transito || robot.estadoActual == RobotAMR.EstadoRobot.Transportando))
             {
                 Vector3 dirFrente = robot.transform.forward;
-                Vector3 posObstaculo = robot.transform.position + dirFrente * 2.2f;
-                posObstaculo.y = robot.transform.position.y;
+                Vector3 posObstaculo = robot.transform.position + dirFrente * 3.10f;
+                posObstaculo.y = 0.202f;
 
                 obstaculoPasilloISO.transform.position = posObstaculo;
-                if (dirFrente != Vector3.zero)
-                {
-                    obstaculoPasilloISO.transform.rotation = Quaternion.LookRotation(-dirFrente);
-                }
+                obstaculoPasilloISO.transform.rotation = Quaternion.identity;
             }
 
             obstaculoPasilloISO.SetActive(true);
@@ -454,22 +477,34 @@ public class RobotManagerEVE : MonoBehaviour
         despachandoDespejeISO = true;
 
         string idRobot = robotAfectado != null ? robotAfectado.idRobot : "AMR";
-        DashboardUI.Instance?.RegistrarLog($"<color=#EF4444>[ISO 3691-4 CAT. 3]:</color> Bloqueo frontal a <0.85m. {idRobot} en parada de proteccion. EVE gestionando despeje...");
+        DashboardUI.Instance?.RegistrarLog($"<color=#EF4444>[ISO 3691-4 CAT. 3]:</color> Bloqueo frontal LiDAR. {idRobot} en parada de proteccion. EVE gestionando despeje...");
 
-        yield return new WaitForSeconds(3.5f);
-
-        // Solo se neutraliza el obstáculo ISO registrado (nunca racks u otra infraestructura estática)
-        if (obstaculoPasilloISO != null && obstaculoPasilloISO.activeSelf)
+        if (dronMantenimiento != null && obstaculoPasilloISO != null)
         {
-            obstaculoPasilloISO.SetActive(false);
+            Action reanudar = () =>
+            {
+                Debug.Log("<color=#10B981>[FLUJO]: 5. Obstáculo despejado por EVE. Retomando Pedido 2.</color>");
+                DashboardUI.Instance?.RegistrarLog($"<color=#10B981>[WMS - VIA LIBRE]:</color> Obstaculo neutralizado por EVE. Autorizando reanudacion temprana de {idRobot}.");
+                if (robotAfectado != null)
+                {
+                    robotAfectado.ReanudarTrasDespejeLiDAR();
+                }
+            };
+            yield return StartCoroutine(dronMantenimiento.EjecutarMisionDespeje(obstaculoPasilloISO, reanudar));
         }
-        Debug.Log("<color=#10B981>[FLUJO]: 5. Obstáculo despejado por EVE. Retomando Pedido 2.</color>");
-
-        DashboardUI.Instance?.RegistrarLog($"<color=#10B981>[WMS - VIA LIBRE]:</color> Obstaculo neutralizado por EVE. Autorizando reanudacion de {idRobot}.");
-
-        if (robotAfectado != null)
+        else
         {
-            robotAfectado.ReanudarTrasDespejeLiDAR();
+            yield return new WaitForSeconds(12.0f);
+            if (obstaculoPasilloISO != null && obstaculoPasilloISO.activeSelf)
+            {
+                obstaculoPasilloISO.SetActive(false);
+            }
+            Debug.Log("<color=#10B981>[FLUJO]: 5. Obstáculo despejado por EVE. Retomando Pedido 2.</color>");
+            DashboardUI.Instance?.RegistrarLog($"<color=#10B981>[WMS - VIA LIBRE]:</color> Obstaculo neutralizado por EVE. Autorizando reanudacion de {idRobot}.");
+            if (robotAfectado != null)
+            {
+                robotAfectado.ReanudarTrasDespejeLiDAR();
+            }
         }
 
         despachandoDespejeISO = false;

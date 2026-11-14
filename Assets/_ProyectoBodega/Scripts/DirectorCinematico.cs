@@ -347,6 +347,11 @@ public class DirectorCinematico : MonoBehaviour
                     vcam2_EVE.Priority = 10;
                     Debug.Log("<color=orange>Director:</color> AMR recargando. Transición a VCam2 (EVE).");
                 }
+                else if (vcam1_Menu != null)
+                {
+                    vcam1_Menu.Priority = 10;
+                    Debug.Log("<color=orange>Director:</color> AMR recargando (Fin de turno). Transición a VCam1 (Menu).");
+                }
                 break;
             case RobotAMR.EstadoRobot.Inactivo:
                 if (managerEVE != null && managerEVE.turnoIniciado && vcam2_EVE != null)
@@ -361,6 +366,13 @@ public class DirectorCinematico : MonoBehaviour
                 }
                 break;
         }
+    }
+
+    public void ActivarVistaGeneralFinDeTurno()
+    {
+        DesactivarPrioridades();
+        if (vcam1_Menu != null) vcam1_Menu.Priority = 10;
+        Debug.Log("<color=orange>Director:</color> Fin de turno. Transición a VCam1 (Vista General / Menu).");
     }
 
     private int indiceCamaraSCADA = 0;
