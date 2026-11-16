@@ -13,5 +13,8 @@ public class Pedido
 [System.Serializable]
 public class Manifiesto
 {
+    public string id_lote;
+    public int total_pallets;
+    public float peso_total_kg;
     public List<Pedido> pedidos;
 }

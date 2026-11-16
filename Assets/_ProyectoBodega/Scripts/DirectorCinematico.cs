@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using Unity.Cinemachine;
 
@@ -24,6 +25,9 @@ public class DirectorCinematico : MonoBehaviour
     public float duracionOrbitaEVE = 4.5f;
     public float radioOrbitaEVE = 4.0f;
 
+    [Header("Estado de Foco Crítico")]
+    private bool focoIncidenteActivo = false;
+
     private void Awake()
     {
         if (Instance != null && Instance != this)
@@ -36,6 +40,7 @@ public class DirectorCinematico : MonoBehaviour
 
     private void Start()
     {
+        SuscribirFlota(true);
         StartCoroutine(SecuenciaIntroCinematica());
     }
 
@@ -281,41 +286,145 @@ public class DirectorCinematico : MonoBehaviour
 
     public void RelevarRobotActivo(RobotAMR nuevoRobot)
     {
-        if (robotAMR != null) robotAMR.OnEstadoCambiado -= EvaluarEstadoAMR;
+        SuscribirFlota(false);
         robotAMR = nuevoRobot;
+        SuscribirFlota(true);
+
         if (robotAMR != null)
         {
-            robotAMR.OnEstadoCambiado += EvaluarEstadoAMR;
             if (vcam3_AMR_Hombro != null) vcam3_AMR_Hombro.Target.TrackingTarget = robotAMR.transform;
-            if (vcam4_Emergencia != null) vcam4_Emergencia.Target.TrackingTarget = robotAMR.transform;
-            EvaluarEstadoAMR(robotAMR.estadoActual);
+            if (!focoIncidenteActivo)
+            {
+                if (vcam4_Emergencia != null) vcam4_Emergencia.Target.TrackingTarget = robotAMR.transform;
+                EvaluarEstadoAMR(robotAMR.estadoActual);
+            }
         }
     }
 
     private void OnEnable()
     {
-        if (managerEVE != null)
-            managerEVE.OnMisionEvaluada += EnfocarEVE;
-        
-        if (robotAMR != null)
-            robotAMR.OnEstadoCambiado += EvaluarEstadoAMR;
+        SuscribirFlota(true);
     }
 
     private void OnDisable()
     {
+        SuscribirFlota(false);
+    }
+
+    private void SuscribirFlota(bool suscribir)
+    {
+        if (managerEVE == null) managerEVE = FindFirstObjectByType<RobotManagerEVE>();
+
         if (managerEVE != null)
+        {
             managerEVE.OnMisionEvaluada -= EnfocarEVE;
-        
-        if (robotAMR != null)
-            robotAMR.OnEstadoCambiado -= EvaluarEstadoAMR;
+            if (suscribir) managerEVE.OnMisionEvaluada += EnfocarEVE;
+        }
+
+        var unicos = new HashSet<RobotAMR>();
+        if (robotAMR != null) unicos.Add(robotAMR);
+        if (managerEVE != null)
+        {
+            if (managerEVE.robotAMR_01 != null) unicos.Add(managerEVE.robotAMR_01);
+            if (managerEVE.robotAMR_02 != null) unicos.Add(managerEVE.robotAMR_02);
+            if (managerEVE.robotAMR_03 != null) unicos.Add(managerEVE.robotAMR_03);
+        }
+
+        foreach (RobotAMR amr in unicos)
+        {
+            if (amr == null) continue;
+            amr.OnEstadoCambiado -= EvaluarEstadoAMR;
+            if (suscribir) amr.OnEstadoCambiado += EvaluarEstadoAMR;
+        }
+    }
+
+    private bool HayIncidenteActivoEnFlota()
+    {
+        RobotAMR[] flota = ObtenerCandidatosFlota();
+        for (int i = 0; i < flota.Length; i++)
+        {
+            RobotAMR r = flota[i];
+            if (r != null && (r.estadoActual == RobotAMR.EstadoRobot.Apagado || r.estadoActual == RobotAMR.EstadoRobot.Interrumpido))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private RobotAMR[] ObtenerCandidatosFlota()
+    {
+        return new RobotAMR[]
+        {
+            managerEVE != null ? managerEVE.robotAMR_01 : null,
+            managerEVE != null ? managerEVE.robotAMR_02 : null,
+            managerEVE != null ? managerEVE.robotAMR_03 : null,
+            robotAMR
+        };
+    }
+
+    private RobotAMR BuscarAMRPorEstadoPrioritario(RobotAMR.EstadoRobot estadoBuscado)
+    {
+        RobotAMR[] flota = ObtenerCandidatosFlota();
+        for (int i = 0; i < flota.Length; i++)
+        {
+            if (flota[i] != null && flota[i].estadoActual == estadoBuscado)
+            {
+                return flota[i];
+            }
+        }
+        return null;
+    }
+
+    public void EnfocarIncidenteCritico(Transform targetIncidente)
+    {
+        if (targetIncidente == null) return;
+
+        focoIncidenteActivo = true;
+        DesactivarPrioridades();
+
+        if (vcam4_Emergencia != null)
+        {
+            vcam4_Emergencia.Target.TrackingTarget = targetIncidente;
+            vcam4_Emergencia.Target.LookAtTarget = targetIncidente;
+            vcam4_Emergencia.Priority = 30;
+        }
+
+        RobotAMR amr = targetIncidente.GetComponent<RobotAMR>();
+        string nombre = amr != null && !string.IsNullOrEmpty(amr.idRobot) ? amr.idRobot : targetIncidente.name;
+        Debug.Log($"<color=red>Director:</color> CÁMARA: TELEMETRÍA DE EMERGENCIA / INCIDENTE CRÍTICO ({nombre}).");
+        DashboardUI.Instance?.RegistrarLog($"<color=#EF4444>[CÁMARA]:</color> TELEMETRÍA DE EMERGENCIA / INCIDENTE CRÍTICO ({nombre}).");
+    }
+
+    public void LiberarFocoIncidente(RobotAMR amrRelevo = null)
+    {
+        focoIncidenteActivo = false;
+        DesactivarPrioridades();
+
+        if (amrRelevo != null)
+        {
+            robotAMR = amrRelevo;
+            if (vcam3_AMR_Hombro != null)
+            {
+                vcam3_AMR_Hombro.Target.TrackingTarget = amrRelevo.transform;
+                vcam3_AMR_Hombro.Priority = 20;
+            }
+            Debug.Log($"<color=orange>Director:</color> Foco de incidente liberado. CÁMARA: SEGUIMIENTO EN RUTA ({amrRelevo.idRobot}).");
+            DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[CÁMARA]:</color> SEGUIMIENTO EN RUTA ({amrRelevo.idRobot}).");
+        }
+        else if (vcam2_EVE != null)
+        {
+            vcam2_EVE.Priority = 10;
+            Debug.Log("<color=orange>Director:</color> Foco de incidente liberado. Retorno a VCam2 (EVE).");
+        }
     }
 
     private void EnfocarEVE()
     {
-        // Guarda de protección: Si el AMR está en parada crítica/evaluando modal, la cámara de emergencia retiene el foco
-        if (robotAMR != null && robotAMR.estadoActual == RobotAMR.EstadoRobot.Interrumpido)
+        // Guarda de protección: Si hay un incidente crítico activo o un AMR apagado/interrumpido, VCam4 retiene el foco
+        if (focoIncidenteActivo || HayIncidenteActivoEnFlota())
         {
-            Debug.Log("<color=orange>Director:</color> Enfoque a EVE abortado: AMR en estado de emergencia/interrupción.");
+            Debug.Log("<color=orange>Director:</color> Enfoque a EVE omitido: incidente crítico activo en VCam4.");
             return;
         }
 
@@ -326,6 +435,19 @@ public class DirectorCinematico : MonoBehaviour
 
     private void EvaluarEstadoAMR(RobotAMR.EstadoRobot estado)
     {
+        if (estado == RobotAMR.EstadoRobot.Apagado || estado == RobotAMR.EstadoRobot.Interrumpido)
+        {
+            RobotAMR amrIncidente = BuscarAMRPorEstadoPrioritario(RobotAMR.EstadoRobot.Apagado)
+                ?? BuscarAMRPorEstadoPrioritario(RobotAMR.EstadoRobot.Interrumpido);
+            if (amrIncidente != null)
+            {
+                EnfocarIncidenteCritico(amrIncidente.transform);
+                return;
+            }
+        }
+
+        if (focoIncidenteActivo) return;
+
         DesactivarPrioridades();
 
         switch (estado)
@@ -334,18 +456,29 @@ public class DirectorCinematico : MonoBehaviour
             case RobotAMR.EstadoRobot.Transportando:
             case RobotAMR.EstadoRobot.Extrayendo:
             case RobotAMR.EstadoRobot.Entregando:
-                if (vcam3_AMR_Hombro != null) vcam3_AMR_Hombro.Priority = 10;
+                if (vcam3_AMR_Hombro != null)
+                {
+                    RobotAMR objetivoActivo = (managerEVE != null && managerEVE.robotEjecutor != null && managerEVE.robotEjecutor.estadoActual != RobotAMR.EstadoRobot.Apagado)
+                        ? managerEVE.robotEjecutor
+                        : robotAMR;
+                    if (objetivoActivo != null)
+                    {
+                        vcam3_AMR_Hombro.Target.TrackingTarget = objetivoActivo.transform;
+                    }
+                    vcam3_AMR_Hombro.Priority = 10;
+                }
                 Debug.Log("<color=orange>Director:</color> Transición a VCam3 (AMR_Hombro).");
-                break;
-            case RobotAMR.EstadoRobot.Interrumpido:
-                if (vcam4_Emergencia != null) vcam4_Emergencia.Priority = 10;
-                Debug.Log("<color=orange>Director:</color> Transición a VCam4 (Emergencia).");
                 break;
             case RobotAMR.EstadoRobot.Recargando:
                 if (managerEVE != null && managerEVE.turnoIniciado && vcam2_EVE != null)
                 {
                     vcam2_EVE.Priority = 10;
                     Debug.Log("<color=orange>Director:</color> AMR recargando. Transición a VCam2 (EVE).");
+                }
+                else if (vcam1_Menu != null)
+                {
+                    vcam1_Menu.Priority = 10;
+                    Debug.Log("<color=orange>Director:</color> AMR recargando (Fin de turno). Transición a VCam1 (Menu).");
                 }
                 break;
             case RobotAMR.EstadoRobot.Inactivo:
@@ -360,6 +493,63 @@ public class DirectorCinematico : MonoBehaviour
                     Debug.Log("<color=orange>Director:</color> Transición a VCam1 (Menu).");
                 }
                 break;
+        }
+    }
+
+    public void ActivarVistaGeneralFinDeTurno()
+    {
+        focoIncidenteActivo = false;
+        DesactivarPrioridades();
+        if (vcam1_Menu != null) vcam1_Menu.Priority = 10;
+        Debug.Log("<color=orange>Director:</color> Fin de turno. Transición a VCam1 (Vista General / Menu).");
+    }
+
+    private int indiceCamaraSCADA = 0;
+
+    /// <summary>
+    /// Alterna manualmente entre las 5 vistas tácticas (General, AMR-01, AMR-02, AMR-03, Aérea EVE).
+    /// </summary>
+    public void CiclarCamaraSCADA()
+    {
+        AlternarCamaraManual();
+    }
+
+    public void AlternarCamaraManual()
+    {
+        focoIncidenteActivo = false;
+        if (managerEVE == null) managerEVE = FindFirstObjectByType<RobotManagerEVE>();
+
+        RobotAMR amr01 = (managerEVE != null && managerEVE.robotAMR_01 != null) ? managerEVE.robotAMR_01 : GameObject.Find("Robot_AMR")?.GetComponent<RobotAMR>();
+        RobotAMR amr02 = (managerEVE != null && managerEVE.robotAMR_02 != null) ? managerEVE.robotAMR_02 : GameObject.Find("Robot_AMR_02")?.GetComponent<RobotAMR>();
+        RobotAMR amr03 = (managerEVE != null && managerEVE.robotAMR_03 != null) ? managerEVE.robotAMR_03 : GameObject.Find("Robot_AMR_03")?.GetComponent<RobotAMR>();
+
+        var vistas = new (CinemachineCamera cam, RobotAMR targetAMR, string descripcion)[]
+        {
+            (vcam1_Menu, null, "CÁMARA: PANORÁMICA GENERAL (SCADA)"),
+            (vcam3_AMR_Hombro, amr01, "CÁMARA: SEGUIMIENTO HOMBRO (AMR-01)"),
+            (vcam3_AMR_Hombro, amr02, "CÁMARA: SEGUIMIENTO HOMBRO (AMR-02)"),
+            (vcam3_AMR_Hombro, amr03, "CÁMARA: SEGUIMIENTO HOMBRO (AMR-03)"),
+            (vcam2_EVE, null, "CÁMARA: ORQUESTADOR CENTRAL EVE (SCADA)")
+        };
+
+        for (int intento = 0; intento < vistas.Length; intento++)
+        {
+            indiceCamaraSCADA = (indiceCamaraSCADA + 1) % vistas.Length;
+            var seleccion = vistas[indiceCamaraSCADA];
+            if (seleccion.cam == null) continue;
+            if (seleccion.cam == vcam3_AMR_Hombro && seleccion.targetAMR == null) continue;
+
+            DesactivarPrioridades();
+            if (seleccion.targetAMR != null)
+            {
+                robotAMR = seleccion.targetAMR;
+                vcam3_AMR_Hombro.Target.TrackingTarget = seleccion.targetAMR.transform;
+            }
+            seleccion.cam.Priority = 20;
+
+            Debug.Log($"<color=orange>Director [SCADA]:</color> {seleccion.descripcion}");
+            DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[{seleccion.descripcion}]</color>");
+            return;
         }
     }
 

@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -24,6 +25,13 @@ public class ModuloDespachoTMS : MonoBehaviour
     private float pesoAcumuladoCamion3 = 0f;
 
     public const float CapacidadMaximaCamionKg = 12000f;
+    public const int CapacidadMaximaPalletsCamion = 3;
+    private const float EspaciadoSlotLIFOMetros = 1.60f;
+
+    // Índices 1..3 correspondientes a Muelle_Camion_01..03
+    private readonly int[] slotsReservados = new int[4];
+    private readonly bool[] renovacionEnCurso = new bool[4];
+    private int camionTurnoActual = 1;
 
     public Stack<Pedido> MatrizLIFOCamion1 => matrizLIFOCamion1;
     public Stack<Pedido> MatrizLIFOCamion2 => matrizLIFOCamion2;
@@ -68,57 +76,98 @@ public class ModuloDespachoTMS : MonoBehaviour
         }
     }
 
-    public Transform ConsultarMuelleDestino(Pedido pedido, out int numeroCamion, out int slotLIFOProyectado)
+    public void ReiniciarEstadoMuelles()
     {
-        numeroCamion = 1;
-        if (pedido != null)
+        StopAllCoroutines();
+        LimpiarListaPalletsCamion(palletsCamion1);
+        LimpiarListaPalletsCamion(palletsCamion2);
+        LimpiarListaPalletsCamion(palletsCamion3);
+
+        matrizLIFOCamion1.Clear();
+        matrizLIFOCamion2.Clear();
+        matrizLIFOCamion3.Clear();
+
+        pesoAcumuladoCamion1 = 0f;
+        pesoAcumuladoCamion2 = 0f;
+        pesoAcumuladoCamion3 = 0f;
+
+        for (int i = 0; i < 4; i++)
         {
-            // Regla forzada temporal (Llenado Concentrado LIFO):
-            // Todos los pedidos del manifiesto.json se envían al Camión 1 (muelleCamion01)
-            // para apilar las 3 estibas en los Slots 1, 2 y 3 del Camión 1.
-            numeroCamion = 1;
-
-            /* Regla de ruteo TMS Módulo 5 (Desactivada temporalmente para validación LIFO):
-            // Pedido 1 (AGU-RUB-330): Camión 1 (Ruta Nacional)
-            // Pedido 2 (CLU-NEG-330): Camión 2 (Ruta Metropolitana)
-            // Pedido 3 (OKT-BAR-50L, 920 kg): Camión 3 (Ruta Express / Carga Pesada)
-            if (pedido.codigo_sku == "AGU-RUB-330" || pedido.id_pallet == "PAL-8491")
-            {
-                numeroCamion = 1;
-            }
-            else if (pedido.codigo_sku == "CLU-NEG-330" || pedido.id_pallet == "PAL-8492")
-            {
-                numeroCamion = 2;
-            }
-            else if (pedido.codigo_sku == "OKT-BAR-50L" || pedido.id_pallet == "PAL-8493" || pedido.peso_kg >= 900f)
-            {
-                numeroCamion = 3;
-            }
-            */
+            slotsReservados[i] = 0;
+            renovacionEnCurso[i] = false;
         }
+        camionTurnoActual = 1;
+    }
 
+    private static void LimpiarListaPalletsCamion(List<GameObject> lista)
+    {
+        for (int i = 0; i < lista.Count; i++)
+        {
+            if (lista[i] != null) Destroy(lista[i]);
+        }
+        lista.Clear();
+    }
+
+    private List<GameObject> ObtenerListaPallets(int numeroCamion)
+    {
         switch (numeroCamion)
         {
-            case 1:
-                slotLIFOProyectado = matrizLIFOCamion1.Count + 1;
+            case 2: return palletsCamion2;
+            case 3: return palletsCamion3;
+            default: return palletsCamion1;
+        }
+    }
+
+    public Transform ConsultarMuelleDestino(Pedido pedido, out int numeroCamion, out int slotLIFOProyectado)
+    {
+        numeroCamion = 0;
+
+        // Rotación secuencial 1 -> 2 -> 3 respetando máximo 3 pallets (físicos o reservados) por camión
+        for (int offset = 0; offset < 3; offset++)
+        {
+            int candidato = ((camionTurnoActual - 1 + offset) % 3) + 1;
+            int ocupados = Mathf.Max(slotsReservados[candidato], ObtenerListaPallets(candidato).Count);
+            if (!renovacionEnCurso[candidato] && ocupados < CapacidadMaximaPalletsCamion)
+            {
+                numeroCamion = candidato;
                 break;
-            case 2:
-                slotLIFOProyectado = matrizLIFOCamion2.Count + 1;
-                break;
-            case 3:
-                slotLIFOProyectado = matrizLIFOCamion3.Count + 1;
-                break;
-            default:
-                slotLIFOProyectado = 1;
-                break;
+            }
+        }
+
+        if (numeroCamion == 0)
+        {
+            // Fallback seguro si todos estuvieran momentáneamente al límite 3/3 en simultáneo
+            numeroCamion = ((camionTurnoActual - 1) % 3) + 1;
+        }
+
+        int baseOcupados = Mathf.Max(slotsReservados[numeroCamion], ObtenerListaPallets(numeroCamion).Count);
+        int nuevaReserva = Mathf.Clamp(baseOcupados + 1, 1, CapacidadMaximaPalletsCamion);
+        slotsReservados[numeroCamion] = nuevaReserva;
+        slotLIFOProyectado = nuevaReserva;
+
+        if (slotsReservados[numeroCamion] >= CapacidadMaximaPalletsCamion)
+        {
+            camionTurnoActual = (numeroCamion % 3) + 1;
+        }
+        else
+        {
+            camionTurnoActual = numeroCamion;
         }
 
         string idPallet = pedido != null ? pedido.id_pallet : "PAL-DESC";
-        string logMensaje = $"<color=#38BDF8>[API MÓDULO 5 -> WMS]:</color> Ruta GPS validada. Asignando {idPallet} a Muelle_Camion_0{numeroCamion}";
+        string logMensaje = $"<color=#38BDF8>[API MÓDULO 5 -> WMS]:</color> Ruta GPS validada. Asignando {idPallet} a Muelle_Camion_0{numeroCamion} (Slot LIFO #{slotLIFOProyectado}/{CapacidadMaximaPalletsCamion})";
         DashboardUI.Instance?.RegistrarLog(logMensaje);
         Debug.Log(logMensaje);
 
         return ObtenerTransformMuelle(numeroCamion);
+    }
+
+    public void CancelarReservaSlot(int numeroCamion, int slotReservado)
+    {
+        if (numeroCamion < 1 || numeroCamion > 3 || slotReservado <= 0) return;
+
+        int entregados = ObtenerListaPallets(numeroCamion).Count;
+        slotsReservados[numeroCamion] = Mathf.Max(entregados, slotsReservados[numeroCamion] - 1);
     }
 
     public Transform ObtenerTransformMuelle(int numeroCamion)
@@ -132,9 +181,48 @@ public class ModuloDespachoTMS : MonoBehaviour
         }
     }
 
-    public void RegistrarEstibaEnCamion(int numeroCamion, Pedido pedido, GameObject palletFisico)
+    public int ObtenerSlotLIFOProyectado(int numeroCamion)
+    {
+        if (numeroCamion < 1 || numeroCamion > 3) numeroCamion = 1;
+        return Mathf.Clamp(Mathf.Max(ObtenerListaPallets(numeroCamion).Count, slotsReservados[numeroCamion]) + 1, 1, CapacidadMaximaPalletsCamion);
+    }
+
+    public Vector3 ObtenerCoordenadaSlotLIFO(int numeroCamion, int slotLIFOProyectado)
+    {
+        Transform muelleTransform = ObtenerTransformMuelle(numeroCamion);
+        if (muelleTransform == null) return Vector3.zero;
+
+        // Inversión LIFO física (Flatbed):
+        // Slot 1 al fondo (Z = +1.60m), Slot 2 al centro (Z = 0m), Slot 3 cerca de rampa (Z = -1.60m)
+        int slotClamped = Mathf.Clamp(slotLIFOProyectado, 1, CapacidadMaximaPalletsCamion);
+        float zOffset = (2 - slotClamped) * EspaciadoSlotLIFOMetros;
+
+        Transform sueloFalso = muelleTransform.parent != null ? muelleTransform.parent.Find("Suelo_Falso_NavMesh") : null;
+        float ySuperficie = 1.813f;
+        float zCentroCarga = muelleTransform.position.z;
+        float xCentroCarga = muelleTransform.position.x;
+
+        if (sueloFalso != null)
+        {
+            Collider colSuelo = sueloFalso.GetComponent<Collider>();
+            ySuperficie = colSuelo != null ? colSuelo.bounds.max.y : (sueloFalso.position.y + 0.066f);
+            zCentroCarga = sueloFalso.position.z;
+            xCentroCarga = sueloFalso.position.x;
+        }
+
+        return new Vector3(xCentroCarga, ySuperficie, zCentroCarga + zOffset);
+    }
+
+    public Vector3 ObtenerCoordenadaSlotActivo(int numeroCamion)
+    {
+        int slotProyectado = ObtenerSlotLIFOProyectado(numeroCamion);
+        return ObtenerCoordenadaSlotLIFO(numeroCamion, slotProyectado);
+    }
+
+    public void RegistrarEstibaEnCamion(int numeroCamion, Pedido pedido, GameObject palletFisico, int slotAsignado = 0)
     {
         if (pedido == null) return;
+        if (numeroCamion < 1 || numeroCamion > 3) numeroCamion = 1;
 
         Transform muelleTransform = ObtenerTransformMuelle(numeroCamion);
         Stack<Pedido> pilaObjetivo;
@@ -143,13 +231,6 @@ public class ModuloDespachoTMS : MonoBehaviour
 
         switch (numeroCamion)
         {
-            case 1:
-                matrizLIFOCamion1.Push(pedido);
-                pesoAcumuladoCamion1 += pedido.peso_kg;
-                pilaObjetivo = matrizLIFOCamion1;
-                listaPallets = palletsCamion1;
-                pesoAcumulado = pesoAcumuladoCamion1;
-                break;
             case 2:
                 matrizLIFOCamion2.Push(pedido);
                 pesoAcumuladoCamion2 += pedido.peso_kg;
@@ -178,10 +259,11 @@ public class ModuloDespachoTMS : MonoBehaviour
             listaPallets.Add(palletFisico);
             palletFisico.transform.SetParent(null, true);
 
-            int indiceLIFO = pilaObjetivo.Count;
-            float zOffset = (indiceLIFO - 2) * 1.6f;
+            int indiceLIFO = slotAsignado > 0
+                ? Mathf.Clamp(slotAsignado, 1, CapacidadMaximaPalletsCamion)
+                : Mathf.Clamp(pilaObjetivo.Count, 1, CapacidadMaximaPalletsCamion);
+            float zOffset = (2 - indiceLIFO) * EspaciadoSlotLIFOMetros;
 
-            // Calibración al ras del Suelo_Falso_NavMesh del camión (maxY = 1.813f en lugar del techo 3.23f)
             Transform sueloFalso = muelleTransform.parent != null ? muelleTransform.parent.Find("Suelo_Falso_NavMesh") : null;
             float ySuperficie = 1.813f;
             float zCentroCarga = muelleTransform.position.z;
@@ -205,8 +287,76 @@ public class ModuloDespachoTMS : MonoBehaviour
             palletFisico.transform.rotation = muelleTransform.rotation;
         }
 
-        string logMatriz = $"<color=cyan>[MATRIZ LIFO CAMIÓN {numeroCamion}]:</color> Estiba {pedido.id_pallet} apilada en Posición #{pilaObjetivo.Count} (Peso acumulado: {pesoAcumulado:F0} kg / {CapacidadMaximaCamionKg:F0} kg)";
+        int estibasActuales = listaPallets.Count;
+        slotsReservados[numeroCamion] = Mathf.Max(slotsReservados[numeroCamion], estibasActuales);
+
+        string logMatriz = $"<color=cyan>[MATRIZ LIFO CAMIÓN {numeroCamion}]:</color> Estiba {pedido.id_pallet} apilada en Posición #{estibasActuales}/{CapacidadMaximaPalletsCamion} (Peso acumulado: {pesoAcumulado:F0} kg / {CapacidadMaximaCamionKg:F0} kg)";
         DashboardUI.Instance?.RegistrarLog(logMatriz);
         Debug.Log(logMatriz);
+
+        if (estibasActuales >= CapacidadMaximaPalletsCamion && !renovacionEnCurso[numeroCamion])
+        {
+            slotsReservados[numeroCamion] = CapacidadMaximaPalletsCamion;
+            StartCoroutine(DespacharYRenovarCamion(numeroCamion, 3.5f));
+        }
+    }
+
+    private IEnumerator DespacharYRenovarCamion(int numeroCamion, float delay = 3.5f)
+    {
+        renovacionEnCurso[numeroCamion] = true;
+        yield return new WaitForSeconds(delay);
+
+        // Esperar hasta que ningún AMR permanezca sobre la rampa o cama de este camión
+        while (AlgunAMREnMuelle(numeroCamion))
+        {
+            yield return new WaitForSeconds(0.25f);
+        }
+
+        List<GameObject> listaPallets = ObtenerListaPallets(numeroCamion);
+        LimpiarListaPalletsCamion(listaPallets);
+
+        switch (numeroCamion)
+        {
+            case 2:
+                matrizLIFOCamion2.Clear();
+                pesoAcumuladoCamion2 = 0f;
+                break;
+            case 3:
+                matrizLIFOCamion3.Clear();
+                pesoAcumuladoCamion3 = 0f;
+                break;
+            default:
+                matrizLIFOCamion1.Clear();
+                pesoAcumuladoCamion1 = 0f;
+                break;
+        }
+
+        slotsReservados[numeroCamion] = 0;
+        renovacionEnCurso[numeroCamion] = false;
+
+        string msgRecambio = $"<color=#10B981>[TMS MÓDULO 5]:</color> Muelle_Camion_0{numeroCamion} completo (3/3 estibas LIFO). Unidad despachada a ruta; remolque vacío habilitado.";
+        DashboardUI.Instance?.RegistrarLog(msgRecambio);
+        Debug.Log(msgRecambio);
+    }
+
+    private bool AlgunAMREnMuelle(int numeroCamion)
+    {
+        Transform muelle = ObtenerTransformMuelle(numeroCamion);
+        if (muelle == null) return false;
+
+        float xMuelle = muelle.position.x;
+        RobotAMR[] flota = Object.FindObjectsByType<RobotAMR>(FindObjectsSortMode.None);
+        for (int i = 0; i < flota.Length; i++)
+        {
+            RobotAMR amr = flota[i];
+            if (amr == null || !amr.gameObject.activeInHierarchy) continue;
+            if (amr.estadoActual == RobotAMR.EstadoRobot.Apagado) continue;
+
+            if (amr.transform.position.z > -1.8f && Mathf.Abs(amr.transform.position.x - xMuelle) < 4.5f)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 }

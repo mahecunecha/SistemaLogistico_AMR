@@ -1,7 +1,16 @@
-# Archivos de metadatos de Unity (vitales para Git, inútiles para la IA)
+# Carpetas autogeneradas de Unity (respaldo por si falta .gitignore)
+Library/
+Temp/
+Obj/
+Build/
+Builds/
+Logs/
+UserSettings/
+
+# Metadatos
 *.meta
 
-# Archivos YAML gigantes generados por Unity
+# Archivos YAML y binarios serializados de Unity
 *.unity
 *.prefab
 *.asset
@@ -15,7 +24,30 @@
 *.flare
 *.renderTexture
 *.mixer
+*.playable
+*.signal
+*.preset
+*.lighting
+*.terrainlayer
+*.spriteatlas
 
-# Paquetes de Unity y configuraciones (opcional, pero recomendado)
-Packages/
-ProjectSettings/
+# Shaders y estilos de UI Toolkit (son texto plano y pesan mucho)
+*.shader
+*.cginc
+*.hlsl
+*.shadergraph
+*.shadersubgraph
+*.uss
+*.uxml
+
+# Código de terceros dentro de Assets (ajusta según tu proyecto)
+Assets/Plugins/
+Assets/TextMesh Pro/
+Assets/Samples/
+
+# Ignorar Packages y ProjectSettings, EXCEPTO estos dos archivos clave
+Packages/*
+!Packages/manifest.json
+
+ProjectSettings/*
+!ProjectSettings/ProjectVersion.txt

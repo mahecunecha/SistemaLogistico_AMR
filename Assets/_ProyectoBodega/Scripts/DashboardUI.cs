@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.UI;
+using System.Collections;
 using System.Collections.Generic;
 using TMPro;
 using System.Text;
@@ -37,6 +38,12 @@ public class DashboardUI : MonoBehaviour
     public SlotTelemetriaAMR telemetriaAMR02;
     public TextMeshProUGUI txtBannerTurno;
 
+    [Header("Soporte Virtual AMR-03 (Panel_Flota)")]
+    public GameObject filaAMR03;
+    public SlotTelemetriaAMR telemetriaAMR03;
+    private bool amr03Habilitado = false;
+    private bool modoReservaAMR02 = false;
+
     [Header("Telemetría y Manifiesto")]
     public Image barraBateriaRelleno;
     public List<TextMeshProUGUI> textosEstadoManifiesto = new List<TextMeshProUGUI>();
@@ -45,6 +52,40 @@ public class DashboardUI : MonoBehaviour
     public GameObject panelEmergencia;
     [Tooltip("Asigna aquí el texto del detalle de emergencia (TMP o Legacy).")]
     [SerializeField] private Component textoDetalleEmergencia;
+
+    [Header("Paneles Colapsables (ISA-101)")]
+    public RectTransform panelManifiestoRect;
+    public RectTransform panelFlotaRect;
+    public RectTransform panelTerminalRect;
+    public TextMeshProUGUI txtBtnToggleManifiesto;
+    public TextMeshProUGUI txtBtnToggleFlota;
+    public TextMeshProUGUI txtBtnToggleTerminal;
+
+    private float alturaOriginalManifiesto = 280f;
+    private float alturaOriginalFlota = 502f;
+    private float alturaOriginalTerminal = 520f;
+    private bool manifiestoExpandido = true;
+    private bool flotaExpandida = true;
+    private bool terminalExpandido = true;
+
+    [Header("Pop-up Ejecutivo SLA y Buzón Supervisor")]
+    public GameObject panelPopupSLA;
+    public TextMeshProUGUI txtTituloPopupSLA;
+    public TextMeshProUGUI txtDetallePopupSLA;
+    public Button btnCerrarPopupSLA;
+    public TextMeshProUGUI txtBtnBuzonSupervisor;
+    private int contadorFeedbackBuzon = 0;
+    private List<string> historialFeedbackSupervisor = new List<string>();
+    private Coroutine rutinaAutoCierrePopup;
+
+    public enum TipoAlertaActiva { BateriaCriticaAMR, IncertidumbreDemandaWMS }
+    private TipoAlertaActiva tipoAlertaActual = TipoAlertaActiva.BateriaCriticaAMR;
+    private RobotManagerEVE.EscenarioHorizonte ultimoEscenarioHorizonte = RobotManagerEVE.EscenarioHorizonte.EscenarioC_FinalTurno;
+    private int ultimoLotePedidos = 50;
+    private int ultimosAmrRequeridos = 4;
+    private float ultimoPesoLoteKg = 42500f;
+    private float ultimoDeficitSoC = 72.5f;
+    private float ultimoCarryOverPct = 0f;
 
     [Header("Módulos")]
     [SerializeField] private GameObject panelMenuModulos;
@@ -73,6 +114,7 @@ public class DashboardUI : MonoBehaviour
 
     public void MostrarEmergencia(bool mostrar, float bateriaProyectada, float varianzaMargen = 3.2f)
     {
+        tipoAlertaActual = TipoAlertaActiva.BateriaCriticaAMR;
         MostrarEmergencia(mostrar);
         
         if (mostrar && textoDetalleEmergencia != null)
@@ -102,8 +144,101 @@ public class DashboardUI : MonoBehaviour
         }
     }
 
+    public void MostrarAlertaIncertidumbreDemanda(
+        RobotManagerEVE.EscenarioHorizonte escenario,
+        float horaActual,
+        float horasRestantes,
+        int nuevosPedidos,
+        float deficitSoC,
+        int amrRequeridos,
+        float porcentajeCarryOver,
+        float pesoLoteKg)
+    {
+        tipoAlertaActual = TipoAlertaActiva.IncertidumbreDemandaWMS;
+        ultimoEscenarioHorizonte = escenario;
+        ultimoLotePedidos = nuevosPedidos;
+        ultimosAmrRequeridos = amrRequeridos;
+        ultimoPesoLoteKg = pesoLoteKg;
+        ultimoDeficitSoC = deficitSoC;
+        ultimoCarryOverPct = porcentajeCarryOver;
+
+        MostrarEmergencia(true);
+
+        if (textoDetalleEmergencia != null)
+        {
+            string mensaje;
+            if (escenario == RobotManagerEVE.EscenarioHorizonte.EscenarioA_InicioTurno)
+            {
+                mensaje = "╔════════════════════════════════════════════════════════════════════════════════════════╗\n" +
+                          "║       ANALIZADOR HORIZONTE [ESCENARIO A - INICIO TURNO]: VIABILIDAD SLA OK             ║\n" +
+                          $"║  Reloj: Hora {horaActual:F1}/8 (Restan {horasRestantes:F1}h) | Lote: {nuevosPedidos} ped ({pesoLoteKg:F0} kg) | Déficit: -{deficitSoC:F1}% SoC   ║\n" +
+                          "║  Dictamen: Tiempo suficiente antes del amanecer, pero demanda (192.5%) supera el 60%  ║\n" +
+                          "║  nominal por unidad. Flota ideal: 3 AMRs (2 activos + 1 soporte/relevo inductivo).    ║\n" +
+                          "╠════════════════════════════════════════════════════════════════════════════════════════╣\n" +
+                          "║  DECISIÓN GERENCIAL DE HORIZONTE TEMPRANO (INDUSTRIA 5.0):                             ║\n" +
+                          "║                                                                                        ║\n" +
+                          "║  • [OPCIÓN A: DIFERIR EXCEDENTE / MANTENER 2 AMRs]                                     ║\n" +
+                          "║    Limitar operación al SoC actual sin habilitar el 3er AMR de relevo rotativo.        ║\n" +
+                          "║                                                                                        ║\n" +
+                          "║  • [OPCIÓN B: APROBAR FLOTA DE 3 AMRs (2 ACTIVOS + 1 RELEVO)]                          ║\n" +
+                          "║    Cumplir 100% del SLA (0% Carry-over) con ciclos de carga de oportunidad 1C.         ║\n" +
+                          "╚════════════════════════════════════════════════════════════════════════════════════════╝";
+            }
+            else if (escenario == RobotManagerEVE.EscenarioHorizonte.EscenarioB_Madrugada)
+            {
+                mensaje = "╔════════════════════════════════════════════════════════════════════════════════════════╗\n" +
+                          "║      ANALIZADOR HORIZONTE [ESCENARIO B - MADRUGADA]: RIESGO MEDIO DE CORTE SLA         ║\n" +
+                          $"║  Reloj: Hora {horaActual:F1}/8 (Restan {horasRestantes:F1}h) | Rezago proyectado: {porcentajeCarryOver:F0}% | Déficit: -{deficitSoC:F1}% SoC ║\n" +
+                          $"║  Dictamen: Tasa de absorción actual (10 ped/h) dejará {porcentajeCarryOver:F0}% del lote sin entregar     ║\n" +
+                          "║  al corte (06:00 AM). Incrementar a 4 AMRs o autorizar Carry-over al turno diurno.    ║\n" +
+                          "╠════════════════════════════════════════════════════════════════════════════════════════╣\n" +
+                          "║  DECISIÓN GERENCIAL DE MADRUGADA (TRADE-OFF SLA vs. CAPEX):                            ║\n" +
+                          "║                                                                                        ║\n" +
+                          $"║  • [OPCIÓN A: AUTORIZAR CARRY-OVER ({porcentajeCarryOver:F0}% REZAGO AL TURNO DIURNO)]                    ║\n" +
+                          "║    Mantener 2 AMRs actuales hasta las 06:00 AM y transferir el saldo pendiente.        ║\n" +
+                          "║                                                                                        ║\n" +
+                          $"║  • [OPCIÓN B: INCREMENTAR FLOTA A {amrRequeridos} AMRs OPERATIVOS]                                  ║\n" +
+                          "║    Duplicar tasa de absorción (20 ped/h) para eliminar el Carry-over antes de 06:00 AM.║\n" +
+                          "╚════════════════════════════════════════════════════════════════════════════════════════╝";
+            }
+            else
+            {
+                mensaje = "╔════════════════════════════════════════════════════════════════════════════════════════╗\n" +
+                          "║       ANALIZADOR HORIZONTE [ESCENARIO C - FINAL TURNO]: COLAPSO LOGÍSTICO / SLA        ║\n" +
+                          $"║  Reloj: Hora {horaActual:F1}/8 (Restan {horasRestantes:F1}h) | Déficit Crítico LiFePO4: -{deficitSoC:F1}% SoC             ║\n" +
+                          $"║  Dictamen: Faltan 30 min y celdas en reserva. Capacidad actual colapsa ({porcentajeCarryOver:F0}% rezago).   ║\n" +
+                          $"║  Se requieren {amrRequeridos} AMRs de emergencia para mantener HBF o diferir el 100% del lote.      ║\n" +
+                          "╠════════════════════════════════════════════════════════════════════════════════════════╣\n" +
+                          "║  DECISIÓN GERENCIAL DE EMERGENCIA (CIERRE DE TURNO NOCTURNO):                          ║\n" +
+                          "║                                                                                        ║\n" +
+                          "║  • [OPCIÓN A: DIFERIR LOTE COMPLETO A TURNO DIURNO]                                    ║\n" +
+                          "║    Proteger SLA actual y piso térmico del 20% LiFePO4 en las 2 unidades en pista.      ║\n" +
+                          "║                                                                                        ║\n" +
+                          $"║  • [OPCIÓN B: APROBAR {amrRequeridos} AMRs DE EMERGENCIA (+1 BAHÍA TMS)]                             ║\n" +
+                          "║    Despliegue táctico inmediato para absorber las 42.5 t preservando el HBF.           ║\n" +
+                          "╚════════════════════════════════════════════════════════════════════════════════════════╝";
+            }
+
+            var prop = textoDetalleEmergencia.GetType().GetProperty("text");
+            if (prop != null)
+            {
+                prop.SetValue(textoDetalleEmergencia, mensaje);
+            }
+            else if (textoDetalleEmergencia is Text legacyText)
+            {
+                legacyText.text = mensaje;
+            }
+        }
+    }
+
     public void OnOverridePresionado()
     {
+        if (tipoAlertaActual == TipoAlertaActiva.IncertidumbreDemandaWMS)
+        {
+            ResolverDecisionHorizonte(false);
+            return;
+        }
+
         MostrarEmergencia(false);
         RobotManagerEVE eve = FindFirstObjectByType<RobotManagerEVE>();
         RobotAMR robot = (eve != null && eve.robotEjecutor != null) ? eve.robotEjecutor : UnityEngine.Object.FindObjectOfType<RobotAMR>();
@@ -115,12 +250,24 @@ public class DashboardUI : MonoBehaviour
 
     public void OnRelevoPresionado()
     {
+        if (tipoAlertaActual == TipoAlertaActiva.IncertidumbreDemandaWMS)
+        {
+            ResolverDecisionHorizonte(true);
+            return;
+        }
+
         MostrarEmergencia(false);
         FindFirstObjectByType<RobotManagerEVE>()?.EjecutarRelevoFlota24_7();
     }
 
     public void OnAbortarMisionPresionado()
     {
+        if (tipoAlertaActual == TipoAlertaActiva.IncertidumbreDemandaWMS)
+        {
+            ResolverDecisionHorizonte(false);
+            return;
+        }
+
         MostrarEmergencia(false);
         RobotManagerEVE eve = FindFirstObjectByType<RobotManagerEVE>();
         RobotAMR robot = (eve != null && eve.robotEjecutor != null) ? eve.robotEjecutor : UnityEngine.Object.FindObjectOfType<RobotAMR>();
@@ -128,6 +275,44 @@ public class DashboardUI : MonoBehaviour
         {
             robot.AbortarMisionPorSeguridad();
         }
+    }
+
+    private void ResolverDecisionHorizonte(bool aprobarExpansion)
+    {
+        MostrarEmergencia(false);
+        tipoAlertaActual = TipoAlertaActiva.BateriaCriticaAMR;
+        FindFirstObjectByType<RobotManagerEVE>()?.NotificarResolucionAlertaDemanda();
+
+        string msg;
+        if (aprobarExpansion)
+        {
+            if (ultimoEscenarioHorizonte == RobotManagerEVE.EscenarioHorizonte.EscenarioA_InicioTurno)
+            {
+                msg = $"<color=#10B981><b>[DECISIÓN GERENCIAL - ESCENARIO A]:</b></color> Aprobada flota de {ultimosAmrRequeridos} AMRs (2 activos + 1 soporte/relevo inductivo 1C). Se absorben los {ultimoLotePedidos} pedidos con 0% Carry-over.";
+            }
+            else if (ultimoEscenarioHorizonte == RobotManagerEVE.EscenarioHorizonte.EscenarioB_Madrugada)
+            {
+                msg = $"<color=#10B981><b>[DECISIÓN GERENCIAL - ESCENARIO B]:</b></color> Aprobado incremento a {ultimosAmrRequeridos} AMRs operativos para eliminar el {ultimoCarryOverPct:F0}% de Carry-over antes de las 06:00 AM.";
+            }
+            else
+            {
+                msg = $"<color=#10B981><b>[DECISIÓN GERENCIAL - ESCENARIO C]:</b></color> Aprobado despliegue de {ultimosAmrRequeridos} AMRs de emergencia (+1 bahía TMS) para cubrir el déficit de -{ultimoDeficitSoC:F1}% SoC manteniendo HBF.";
+            }
+        }
+        else
+        {
+            if (ultimoEscenarioHorizonte == RobotManagerEVE.EscenarioHorizonte.EscenarioB_Madrugada)
+            {
+                msg = $"<color=#F59E0B><b>[DECISIÓN GERENCIAL - ESCENARIO B]:</b></color> Autorizado Carry-over del {ultimoCarryOverPct:F0}% al turno diurno. Flota actual (2 AMRs) conserva piso seguro del 20% LiFePO4.";
+            }
+            else
+            {
+                msg = $"<color=#F59E0B><b>[DECISIÓN GERENCIAL - ADMISIÓN]:</b></color> Lote de {ultimoLotePedidos} pedidos ({ultimoPesoLoteKg:F0} kg) diferido a turno diurno. Protegido SLA y piso del 20% LiFePO4 en las 2 unidades actuales.";
+            }
+        }
+
+        RegistrarLog(msg);
+        Debug.Log(msg);
     }
 
     public void ActualizarBateria(string id, float porcentaje, RobotAMR.EstadoRobot estado)
@@ -145,7 +330,18 @@ public class DashboardUI : MonoBehaviour
             }
             if (slot.txtEstado != null)
             {
-                slot.txtEstado.text = FormatearEstadoVisual(estado);
+                if (slot == telemetriaAMR02 && estado == RobotAMR.EstadoRobot.Inactivo && modoReservaAMR02)
+                {
+                    slot.txtEstado.text = $"<color=#38BDF8>RESERVA / SOPORTE ({porcentaje * 100f:F0}%)</color>";
+                }
+                else if (slot == telemetriaAMR03 && estado == RobotAMR.EstadoRobot.Inactivo && amr03Habilitado)
+                {
+                    slot.txtEstado.text = $"<color=#38BDF8>SOPORTE / RELEVO 24/7 ({porcentaje * 100f:F0}% SoC)</color>";
+                }
+                else
+                {
+                    slot.txtEstado.text = FormatearEstadoVisual(estado);
+                }
             }
         }
 
@@ -170,6 +366,11 @@ public class DashboardUI : MonoBehaviour
             return telemetriaAMR02;
         }
 
+        if (telemetriaAMR03 != null && (id == telemetriaAMR03.idRobot || id.Contains("03") || id.Equals("Robot_AMR_03", System.StringComparison.OrdinalIgnoreCase)))
+        {
+            return telemetriaAMR03;
+        }
+
         return telemetriaAMR01;
     }
 
@@ -184,6 +385,7 @@ public class DashboardUI : MonoBehaviour
             case RobotAMR.EstadoRobot.Entregando: return "<color=#4ADE80>ENTREGANDO</color>";
             case RobotAMR.EstadoRobot.Interrumpido: return "<color=#EF4444>INTERRUMPIDO</color>";
             case RobotAMR.EstadoRobot.Recargando: return "<color=#38BDF8>RECARGANDO (Inductivo 1C)</color>";
+            case RobotAMR.EstadoRobot.Apagado: return "<color=#EF4444>APAGADO (<3% BMS)</color>";
             default: return estado.ToString().ToUpper();
         }
     }
@@ -195,10 +397,63 @@ public class DashboardUI : MonoBehaviour
 
     public void ActualizarEstadoManifiesto(int indice, string nuevoEstado, Color color)
     {
-        if (indice >= 0 && indice < textosEstadoManifiesto.Count && textosEstadoManifiesto[indice] != null)
+        if (textosEstadoManifiesto != null && indice >= 0 && indice < textosEstadoManifiesto.Count)
         {
-            textosEstadoManifiesto[indice].text = nuevoEstado;
-            textosEstadoManifiesto[indice].color = color;
+            if (textosEstadoManifiesto[indice] != null)
+            {
+                textosEstadoManifiesto[indice].text = nuevoEstado;
+                textosEstadoManifiesto[indice].color = color;
+            }
+        }
+    }
+
+    public void ConfigurarReservaAMR02(bool enReserva)
+    {
+        modoReservaAMR02 = enReserva;
+        if (telemetriaAMR02 != null && telemetriaAMR02.txtEstado != null)
+        {
+            telemetriaAMR02.txtEstado.text = enReserva
+                ? "<color=#38BDF8>RESERVA / SOPORTE (80%)</color>"
+                : FormatearEstadoVisual(RobotAMR.EstadoRobot.Inactivo);
+        }
+    }
+
+    public void ConfigurarEstadoSoporteAMR03(bool activo, string estadoTexto = "<color=#38BDF8>SOPORTE / RELEVO 24/7 (80% SoC)</color>")
+    {
+        if (panelFlotaRect == null) InicializarPanelesColapsables();
+        if (filaAMR03 == null && panelFlotaRect != null)
+        {
+            Transform t = panelFlotaRect.Find("Fila_AMR_03");
+            if (t != null) filaAMR03 = t.gameObject;
+        }
+
+        amr03Habilitado = activo;
+        alturaOriginalFlota = activo ? 650f : 502f;
+
+        if (filaAMR03 != null)
+        {
+            filaAMR03.SetActive(activo && flotaExpandida);
+
+            if (telemetriaAMR03 != null)
+            {
+                if (telemetriaAMR03.barraBateriaRelleno != null) telemetriaAMR03.barraBateriaRelleno.fillAmount = 0.80f;
+                if (telemetriaAMR03.txtBateria != null) telemetriaAMR03.txtBateria.text = "80.0%";
+                if (telemetriaAMR03.txtEstado != null) telemetriaAMR03.txtEstado.text = estadoTexto;
+            }
+            else
+            {
+                Transform tEstado = filaAMR03.transform.Find("Txt_Estado");
+                if (tEstado != null)
+                {
+                    var tmp = tEstado.GetComponent<TextMeshProUGUI>();
+                    if (tmp != null) tmp.text = estadoTexto;
+                }
+            }
+        }
+
+        if (panelFlotaRect != null && flotaExpandida)
+        {
+            panelFlotaRect.sizeDelta = new Vector2(panelFlotaRect.sizeDelta.x, alturaOriginalFlota);
         }
     }
 
@@ -256,6 +511,195 @@ public class DashboardUI : MonoBehaviour
         }
 
         ActualizarBannerTurno("<b><color=#38BDF8>TURNO NOCTURNO:</color> Hora 1/8 (Operación Nominal) | Química: <color=#F59E0B>LiFePO4</color> (80% - 20%)</b>");
+
+        InicializarPanelesColapsables();
+    }
+
+    private void InicializarPanelesColapsables()
+    {
+        if (panelManifiestoRect == null)
+        {
+            var go = GameObject.Find("UI_Dashboard_Corporativo/HUD_Operativo/Manifiesto");
+            if (go != null) panelManifiestoRect = go.GetComponent<RectTransform>();
+        }
+        if (panelFlotaRect == null)
+        {
+            var go = GameObject.Find("UI_Dashboard_Corporativo/HUD_Operativo/Panel_Flota");
+            if (go != null) panelFlotaRect = go.GetComponent<RectTransform>();
+        }
+        if (panelTerminalRect == null)
+        {
+            var go = GameObject.Find("UI_Dashboard_Corporativo/HUD_Operativo/Panel_Terminal_EVE");
+            if (go != null) panelTerminalRect = go.GetComponent<RectTransform>();
+        }
+
+        if (panelManifiestoRect != null && panelManifiestoRect.sizeDelta.y > 34f)
+        {
+            alturaOriginalManifiesto = panelManifiestoRect.sizeDelta.y;
+        }
+        if (panelFlotaRect != null && panelFlotaRect.sizeDelta.y > 74f)
+        {
+            alturaOriginalFlota = panelFlotaRect.sizeDelta.y;
+        }
+        if (panelTerminalRect != null && panelTerminalRect.sizeDelta.y > 34f)
+        {
+            alturaOriginalTerminal = panelTerminalRect.sizeDelta.y;
+        }
+
+        if (txtBtnToggleManifiesto == null && panelManifiestoRect != null)
+        {
+            var t = panelManifiestoRect.Find("Header_Manifiesto/Btn_Toggle_Manifiesto/Text (TMP)");
+            if (t != null) txtBtnToggleManifiesto = t.GetComponent<TextMeshProUGUI>();
+        }
+        if (txtBtnToggleFlota == null && panelFlotaRect != null)
+        {
+            var t = panelFlotaRect.Find("Header_Flota/Btn_Toggle_Flota/Text (TMP)");
+            if (t != null) txtBtnToggleFlota = t.GetComponent<TextMeshProUGUI>();
+        }
+        if (txtBtnToggleTerminal == null && panelTerminalRect != null)
+        {
+            var t = panelTerminalRect.Find("Header_Terminal/Btn_Toggle_Terminal/Text (TMP)");
+            if (t != null) txtBtnToggleTerminal = t.GetComponent<TextMeshProUGUI>();
+        }
+    }
+
+    public void TogglePanelManifiesto()
+    {
+        AlternarPanelManifiesto(!manifiestoExpandido);
+    }
+
+    public void TogglePanelFlota()
+    {
+        AlternarPanelFlota(!flotaExpandida);
+    }
+
+    public void TogglePanelTerminal()
+    {
+        AlternarPanelTerminal(!terminalExpandido);
+    }
+
+    public void AlternarPanelManifiesto(bool expandir)
+    {
+        if (panelManifiestoRect == null) InicializarPanelesColapsables();
+        if (panelManifiestoRect == null) return;
+
+        manifiestoExpandido = expandir;
+        alturaOriginalManifiesto = 280f;
+
+        if (expandir)
+        {
+            panelManifiestoRect.sizeDelta = new Vector2(panelManifiestoRect.sizeDelta.x, alturaOriginalManifiesto);
+            for (int i = 0; i < panelManifiestoRect.childCount; i++)
+            {
+                Transform child = panelManifiestoRect.GetChild(i);
+                if (child.name != "Header_Manifiesto")
+                {
+                    child.gameObject.SetActive(true);
+                }
+            }
+            if (txtBtnToggleManifiesto != null) txtBtnToggleManifiesto.text = "[-]";
+        }
+        else
+        {
+            for (int i = 0; i < panelManifiestoRect.childCount; i++)
+            {
+                Transform child = panelManifiestoRect.GetChild(i);
+                if (child.name != "Header_Manifiesto")
+                {
+                    child.gameObject.SetActive(false);
+                }
+            }
+            panelManifiestoRect.sizeDelta = new Vector2(panelManifiestoRect.sizeDelta.x, 34f);
+            if (txtBtnToggleManifiesto != null) txtBtnToggleManifiesto.text = "[+]";
+        }
+    }
+
+    public void AlternarPanelFlota(bool expandir)
+    {
+        if (panelFlotaRect == null) InicializarPanelesColapsables();
+        if (panelFlotaRect == null) return;
+
+        flotaExpandida = expandir;
+
+        if (expandir)
+        {
+            float alturaBase = amr03Habilitado ? 650f : 502f;
+            float targetHeight = alturaOriginalFlota > 74f ? alturaOriginalFlota : alturaBase;
+            panelFlotaRect.sizeDelta = new Vector2(panelFlotaRect.sizeDelta.x, targetHeight);
+            for (int i = 0; i < panelFlotaRect.childCount; i++)
+            {
+                Transform child = panelFlotaRect.GetChild(i);
+                if (child.name == "Fila_AMR_03")
+                {
+                    child.gameObject.SetActive(amr03Habilitado);
+                }
+                else
+                {
+                    child.gameObject.SetActive(true);
+                }
+            }
+            if (txtBtnToggleFlota != null) txtBtnToggleFlota.text = "[-]";
+        }
+        else
+        {
+            if (panelFlotaRect.sizeDelta.y > 74f)
+            {
+                alturaOriginalFlota = panelFlotaRect.sizeDelta.y;
+            }
+            // Conserva Header_Flota y Banner_Turno_Contextual (norma ISA-101)
+            for (int i = 0; i < panelFlotaRect.childCount; i++)
+            {
+                Transform child = panelFlotaRect.GetChild(i);
+                if (child.name == "Header_Flota" || child.name == "Banner_Turno_Contextual")
+                {
+                    child.gameObject.SetActive(true);
+                }
+                else
+                {
+                    child.gameObject.SetActive(false);
+                }
+            }
+            panelFlotaRect.sizeDelta = new Vector2(panelFlotaRect.sizeDelta.x, 74f);
+            if (txtBtnToggleFlota != null) txtBtnToggleFlota.text = "[+]";
+        }
+    }
+
+    public void AlternarPanelTerminal(bool expandir)
+    {
+        if (panelTerminalRect == null) InicializarPanelesColapsables();
+        if (panelTerminalRect == null) return;
+
+        terminalExpandido = expandir;
+
+        ScrollRect scroll = scrollTerminalEVE != null ? scrollTerminalEVE : panelTerminalRect.GetComponent<ScrollRect>();
+        Transform viewport = panelTerminalRect.Find("Viewport");
+        Transform scrollbar = panelTerminalRect.Find("Scrollbar_Vertical");
+
+        if (expandir)
+        {
+            float targetHeight = alturaOriginalTerminal > 34f ? alturaOriginalTerminal : 520f;
+            panelTerminalRect.sizeDelta = new Vector2(panelTerminalRect.sizeDelta.x, targetHeight);
+            if (viewport != null) viewport.gameObject.SetActive(true);
+            if (scrollbar != null) scrollbar.gameObject.SetActive(true);
+            if (scroll != null)
+            {
+                scroll.enabled = true;
+                scroll.verticalNormalizedPosition = 0f;
+            }
+            if (txtBtnToggleTerminal != null) txtBtnToggleTerminal.text = "[-]";
+        }
+        else
+        {
+            if (panelTerminalRect.sizeDelta.y > 34f)
+            {
+                alturaOriginalTerminal = panelTerminalRect.sizeDelta.y;
+            }
+            if (scroll != null) scroll.enabled = false;
+            if (viewport != null) viewport.gameObject.SetActive(false);
+            if (scrollbar != null) scrollbar.gameObject.SetActive(false);
+            panelTerminalRect.sizeDelta = new Vector2(panelTerminalRect.sizeDelta.x, 34f);
+            if (txtBtnToggleTerminal != null) txtBtnToggleTerminal.text = "[+]";
+        }
     }
 
     public void MostrarOverlayTimeLapse(bool mostrar)
@@ -307,6 +751,185 @@ public class DashboardUI : MonoBehaviour
         {
             Instance = null;
         }
+    }
+
+    public void MostrarPopUpEjecutivoSLA(string titulo, string detalle, float duracion = 4.5f)
+    {
+        AsegurarPopupSLA();
+        if (panelPopupSLA == null) return;
+
+        panelPopupSLA.SetActive(true);
+        if (txtTituloPopupSLA != null) txtTituloPopupSLA.text = titulo;
+        if (txtDetallePopupSLA != null) txtDetallePopupSLA.text = detalle;
+
+        if (rutinaAutoCierrePopup != null)
+        {
+            StopCoroutine(rutinaAutoCierrePopup);
+        }
+        rutinaAutoCierrePopup = StartCoroutine(AutoCerrarPopupSLA(Mathf.Max(0.5f, duracion)));
+    }
+
+    private IEnumerator AutoCerrarPopupSLA(float duracion)
+    {
+        yield return new WaitForSecondsRealtime(duracion);
+        if (panelPopupSLA != null)
+        {
+            panelPopupSLA.SetActive(false);
+        }
+        rutinaAutoCierrePopup = null;
+    }
+
+    public void CerrarPopUpEjecutivoSLA()
+    {
+        if (rutinaAutoCierrePopup != null)
+        {
+            StopCoroutine(rutinaAutoCierrePopup);
+            rutinaAutoCierrePopup = null;
+        }
+        if (panelPopupSLA != null)
+        {
+            panelPopupSLA.SetActive(false);
+        }
+    }
+
+    public void MostrarPopUpRechazo(string motivo)
+    {
+        MostrarPopUpEjecutivoSLA("<color=#EF4444>RECHAZO DE INGESTA ERP</color>", motivo, 4.5f);
+    }
+
+    public void RegistrarFeedbackSupervisor(string informeTecnico)
+    {
+        if (string.IsNullOrEmpty(informeTecnico)) return;
+
+        historialFeedbackSupervisor.Add(informeTecnico);
+        contadorFeedbackBuzon++;
+
+        if (txtBtnBuzonSupervisor == null)
+        {
+            Transform tBtn = transform.Find("HUD_Operativo/Panel_Controles_SCADA/Btn_Buzon_Supervisor/Text (TMP)");
+            if (tBtn != null) txtBtnBuzonSupervisor = tBtn.GetComponent<TextMeshProUGUI>();
+        }
+
+        if (txtBtnBuzonSupervisor != null)
+        {
+            txtBtnBuzonSupervisor.text = $"Buzón [{contadorFeedbackBuzon}]";
+        }
+    }
+
+    public void MostrarUltimoFeedbackBuzon()
+    {
+        if (historialFeedbackSupervisor.Count == 0)
+        {
+            MostrarPopUpEjecutivoSLA("BUZÓN DEL SUPERVISOR", "Sin reportes técnicos de rechazo pendientes.", 4.5f);
+        }
+        else
+        {
+            string ultimoInforme = historialFeedbackSupervisor[historialFeedbackSupervisor.Count - 1];
+            MostrarPopUpEjecutivoSLA($"BUZÓN SUPERVISOR ({historialFeedbackSupervisor.Count})", ultimoInforme, 6.0f);
+        }
+    }
+
+    private void AsegurarPopupSLA()
+    {
+        if (panelPopupSLA == null)
+        {
+            Transform encontrado = transform.Find("HUD_Operativo/Panel_Popup_Ejecutivo_SLA");
+            if (encontrado != null)
+            {
+                panelPopupSLA = encontrado.gameObject;
+            }
+        }
+
+        if (panelPopupSLA != null)
+        {
+            if (txtTituloPopupSLA == null)
+            {
+                Transform t = panelPopupSLA.transform.Find("Txt_Titulo_Popup_SLA");
+                if (t != null) txtTituloPopupSLA = t.GetComponent<TextMeshProUGUI>();
+            }
+            if (txtDetallePopupSLA == null)
+            {
+                Transform t = panelPopupSLA.transform.Find("Txt_Detalle_Popup_SLA");
+                if (t != null) txtDetallePopupSLA = t.GetComponent<TextMeshProUGUI>();
+            }
+            if (btnCerrarPopupSLA == null)
+            {
+                Transform t = panelPopupSLA.transform.Find("Btn_Cerrar_Popup_SLA");
+                if (t != null) btnCerrarPopupSLA = t.GetComponent<Button>();
+            }
+            return;
+        }
+
+        // Fallback en tiempo de ejecución si el panel no existía en escena
+        Transform padreHUD = transform.Find("HUD_Operativo");
+        Transform contenedor = padreHUD != null ? padreHUD : transform;
+
+        panelPopupSLA = new GameObject("Panel_Popup_Ejecutivo_SLA", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+        panelPopupSLA.transform.SetParent(contenedor, false);
+        RectTransform rt = panelPopupSLA.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0.5f, 0.5f);
+        rt.anchorMax = new Vector2(0.5f, 0.5f);
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.sizeDelta = new Vector2(560f, 190f);
+        rt.anchoredPosition = new Vector2(0f, 120f);
+
+        Image bg = panelPopupSLA.GetComponent<Image>();
+        bg.color = new Color(0.06f, 0.09f, 0.14f, 0.96f);
+
+        GameObject goTitulo = new GameObject("Txt_Titulo_Popup_SLA", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
+        goTitulo.transform.SetParent(panelPopupSLA.transform, false);
+        RectTransform rtTitulo = goTitulo.GetComponent<RectTransform>();
+        rtTitulo.anchorMin = new Vector2(0f, 1f);
+        rtTitulo.anchorMax = new Vector2(1f, 1f);
+        rtTitulo.pivot = new Vector2(0.5f, 1f);
+        rtTitulo.sizeDelta = new Vector2(-120f, 34f);
+        rtTitulo.anchoredPosition = new Vector2(-40f, -12f);
+        txtTituloPopupSLA = goTitulo.GetComponent<TextMeshProUGUI>();
+        txtTituloPopupSLA.fontSize = 16f;
+        txtTituloPopupSLA.fontStyle = FontStyles.Bold;
+        txtTituloPopupSLA.alignment = TextAlignmentOptions.Left;
+        txtTituloPopupSLA.color = Color.white;
+        txtTituloPopupSLA.raycastTarget = false;
+
+        GameObject goDetalle = new GameObject("Txt_Detalle_Popup_SLA", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
+        goDetalle.transform.SetParent(panelPopupSLA.transform, false);
+        RectTransform rtDetalle = goDetalle.GetComponent<RectTransform>();
+        rtDetalle.anchorMin = new Vector2(0f, 0f);
+        rtDetalle.anchorMax = new Vector2(1f, 1f);
+        rtDetalle.pivot = new Vector2(0.5f, 0.5f);
+        rtDetalle.offsetMin = new Vector2(20f, 18f);
+        rtDetalle.offsetMax = new Vector2(-20f, -52f);
+        txtDetallePopupSLA = goDetalle.GetComponent<TextMeshProUGUI>();
+        txtDetallePopupSLA.fontSize = 14f;
+        txtDetallePopupSLA.alignment = TextAlignmentOptions.TopLeft;
+        txtDetallePopupSLA.color = new Color(0.9f, 0.94f, 0.98f, 1f);
+        txtDetallePopupSLA.raycastTarget = false;
+
+        GameObject goCerrar = new GameObject("Btn_Cerrar_Popup_SLA", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image), typeof(Button));
+        goCerrar.transform.SetParent(panelPopupSLA.transform, false);
+        RectTransform rtCerrar = goCerrar.GetComponent<RectTransform>();
+        rtCerrar.anchorMin = new Vector2(1f, 1f);
+        rtCerrar.anchorMax = new Vector2(1f, 1f);
+        rtCerrar.pivot = new Vector2(1f, 1f);
+        rtCerrar.sizeDelta = new Vector2(88f, 28f);
+        rtCerrar.anchoredPosition = new Vector2(-12f, -12f);
+        goCerrar.GetComponent<Image>().color = new Color(0.18f, 0.24f, 0.34f, 1f);
+        btnCerrarPopupSLA = goCerrar.GetComponent<Button>();
+        btnCerrarPopupSLA.onClick.AddListener(CerrarPopUpEjecutivoSLA);
+
+        GameObject goCerrarTxt = new GameObject("Text (TMP)", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
+        goCerrarTxt.transform.SetParent(goCerrar.transform, false);
+        RectTransform rtCT = goCerrarTxt.GetComponent<RectTransform>();
+        rtCT.anchorMin = Vector2.zero;
+        rtCT.anchorMax = Vector2.one;
+        rtCT.sizeDelta = Vector2.zero;
+        TextMeshProUGUI tmpCerrar = goCerrarTxt.GetComponent<TextMeshProUGUI>();
+        tmpCerrar.text = "[Cerrar]";
+        tmpCerrar.fontSize = 13f;
+        tmpCerrar.fontStyle = FontStyles.Bold;
+        tmpCerrar.alignment = TextAlignmentOptions.Center;
+        tmpCerrar.color = Color.white;
+        tmpCerrar.raycastTarget = false;
     }
 
     public void RegistrarLog(string mensaje)
