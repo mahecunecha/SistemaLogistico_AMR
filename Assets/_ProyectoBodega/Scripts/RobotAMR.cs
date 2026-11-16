@@ -7,7 +7,7 @@ public class RobotAMR : MonoBehaviour
 {
     /* Máquina de Estados Finitos (FSM) para blindar el código contra errores lógicos, enum es una lista restrictiva.
     Le prohíbe a la variable estadoActual tener cualquier otro valor que no sea uno de esos tres.*/
-    public enum EstadoRobot { Inactivo, En_Transito, Extrayendo, Transportando, Interrumpido, Entregando, Recargando }
+    public enum EstadoRobot { Inactivo, En_Transito, Extrayendo, Transportando, Interrumpido, Entregando, Recargando, Apagado }
     
     public event System.Action<EstadoRobot> OnEstadoCambiado;
 
@@ -48,11 +48,17 @@ public class RobotAMR : MonoBehaviour
     public const float RadioAgenteIndustrial = 0.60f;
     public const float VelocidadAngularIndustrial = 720.0f;
 
-    [Header("Control de Tráfico Industrial (Mutex ISO 3691-4)")]
+    [Header("Control de Tráfico Industrial (Mutex ISO 3691-4 & VDA 5050)")]
+    private static readonly List<RobotAMR> flotaActiva = new List<RobotAMR>(3);
     private static readonly Dictionary<Transform, RobotAMR> zonasReservadasMutex = new Dictionary<Transform, RobotAMR>();
     private const float DistanciaCompuertaMutex = 3.5f;
     private const float RadioOcupacionFisicaMutex = 2.5f;
+    private const float RadioBurbujaEntradaVDA = 2.50f;
+    private const float RadioBurbujaSalidaVDA = 2.80f;
     private bool enEsperaMutex = false;
+    private bool cediendoPasoAMR = false;
+    private float tiempoDetenidoCediendo = 0f;
+    private float tiempoInmunidadDespeje = 0f;
 
     [Header("Enrutamiento Ortogonal (VDA 5050)")]
     public const float ZAvenidaOeste = -32.0f;
@@ -60,6 +66,7 @@ public class RobotAMR : MonoBehaviour
     public const float XPorticoSalidaNorte = 34.40f;
     public const float XPorticoEntradaSur = 32.60f;
     public const float ZUmbralPortico = -48.0f;
+    public const float ZColectorSalaCarga = -51.80f;
     public const float ZPieRampaCamion = -2.0f;
     public const float DesfaseCarrilRack = 1.75f;
     public const float XCentroASRS = -21.20f;
@@ -76,8 +83,17 @@ public class RobotAMR : MonoBehaviour
     private NavMeshAgent agente;
     private Pedido pedidoActual; // Conoce la estructura, pero no toda la base de datos
     private bool modoDegradacionActivo = false;
+    private int indiceFilaManifiesto = 0;
 
     public Pedido PedidoActual => pedidoActual;
+    [HideInInspector]
+    public bool colapsoBMSArmadoPostDescarga = false;
+
+    public bool TieneCargaFisica =>
+        palletActualGO != null ||
+        estadoActual == EstadoRobot.Extrayendo ||
+        estadoActual == EstadoRobot.Transportando ||
+        estadoActual == EstadoRobot.Entregando;
 
     [Header("Referencias (LIFO)")]
     public RobotManagerEVE managerEVE;
@@ -124,9 +140,19 @@ public class RobotAMR : MonoBehaviour
         }
     }
 
+    void OnEnable()
+    {
+        if (!flotaActiva.Contains(this))
+        {
+            flotaActiva.Add(this);
+        }
+    }
+
     void OnDisable()
     {
+        flotaActiva.Remove(this);
         enEsperaMutex = false;
+        cediendoPasoAMR = false;
         colaWaypoints.Clear();
         LimpiarPalletTemporal();
         LiberarMutexDeRobot(this);
@@ -134,23 +160,39 @@ public class RobotAMR : MonoBehaviour
 
     void OnDestroy()
     {
+        flotaActiva.Remove(this);
         enEsperaMutex = false;
+        cediendoPasoAMR = false;
         colaWaypoints.Clear();
         LimpiarPalletTemporal();
         LiberarMutexDeRobot(this);
     }
 
+    private int ObtenerIndiceUnidad()
+    {
+        if (!string.IsNullOrEmpty(idRobot))
+        {
+            if (idRobot.EndsWith("03")) return 3;
+            if (idRobot.EndsWith("02")) return 2;
+            if (idRobot.EndsWith("01")) return 1;
+        }
+        if (gameObject.name.Contains("03")) return 3;
+        if (gameObject.name.Contains("02")) return 2;
+        return 1;
+    }
+
     public void ActualizarJerarquiaNavegacion()
     {
-        if (agente == null) return;
+        if (agente == null || !agente.enabled) return;
 
-        int offsetDesempate = ((!string.IsNullOrEmpty(idRobot) && idRobot.EndsWith("02")) || gameObject.name.Contains("02")) ? 1 : 0;
+        int offsetDesempate = Mathf.Max(0, ObtenerIndiceUnidad() - 1);
 
         switch (estadoActual)
         {
             case EstadoRobot.Extrayendo:
             case EstadoRobot.Entregando:
             case EstadoRobot.Interrumpido:
+            case EstadoRobot.Apagado:
                 agente.avoidancePriority = 10 + offsetDesempate;
                 agente.obstacleAvoidanceType = ObstacleAvoidanceType.NoObstacleAvoidance;
                 break;
@@ -178,6 +220,12 @@ public class RobotAMR : MonoBehaviour
         }
     }
 
+    public bool EstaEvacuandoZonaMuelle()
+    {
+        return (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Recargando) &&
+               transform.position.z > -12.0f && transform.position.x > 18.0f;
+    }
+
     private bool IntentarReservarZonaMutex(Transform zona)
     {
         if (zona == null) return true;
@@ -185,7 +233,9 @@ public class RobotAMR : MonoBehaviour
         if (zonasReservadasMutex.TryGetValue(zona, out RobotAMR propietario))
         {
             if (propietario == null || !propietario.gameObject.activeInHierarchy ||
-                propietario.estadoActual == EstadoRobot.Inactivo || propietario.estadoActual == EstadoRobot.Recargando)
+                propietario.estadoActual == EstadoRobot.Inactivo ||
+                propietario.estadoActual == EstadoRobot.Recargando ||
+                propietario.estadoActual == EstadoRobot.Apagado)
             {
                 zonasReservadasMutex.Remove(zona);
             }
@@ -195,21 +245,28 @@ public class RobotAMR : MonoBehaviour
             }
         }
 
-        if (managerEVE != null)
+        Vector3 puntoRef = (agente != null && agente.enabled && agente.hasPath) ? agente.pathEndPosition : zona.position;
+        Vector2 posRefXZ = new Vector2(puntoRef.x, puntoRef.z);
+        bool reservandoMuelleEntrega = estadoActual == EstadoRobot.Transportando && zona == zonaTransferencia;
+
+        for (int i = 0; i < flotaActiva.Count; i++)
         {
-            RobotAMR otroRobot = (managerEVE.robotAMR_01 != null && managerEVE.robotAMR_01 != this) ? managerEVE.robotAMR_01 :
-                                 ((managerEVE.robotAMR_02 != null && managerEVE.robotAMR_02 != this) ? managerEVE.robotAMR_02 : null);
+            RobotAMR otroRobot = flotaActiva[i];
+            if (otroRobot == null || otroRobot == this || !otroRobot.gameObject.activeInHierarchy) continue;
+            if (otroRobot.estadoActual == EstadoRobot.Inactivo || otroRobot.estadoActual == EstadoRobot.Apagado) continue;
 
-            if (otroRobot != null && otroRobot.gameObject.activeInHierarchy && otroRobot.estadoActual != EstadoRobot.Inactivo)
+            // Si estamos entrando a un muelle, esperar antes de la rampa mientras otro AMR ocupe la cama o rampa de ese muelle
+            if (reservandoMuelleEntrega &&
+                otroRobot.transform.position.z > -5.5f &&
+                Mathf.Abs(otroRobot.transform.position.x - zona.position.x) < 3.2f)
             {
-                Vector3 puntoRef = (agente != null && agente.hasPath) ? agente.pathEndPosition : zona.position;
-                Vector2 posOtroXZ = new Vector2(otroRobot.transform.position.x, otroRobot.transform.position.z);
-                Vector2 posRefXZ = new Vector2(puntoRef.x, puntoRef.z);
+                return false;
+            }
 
-                if (Vector2.Distance(posOtroXZ, posRefXZ) < RadioOcupacionFisicaMutex)
-                {
-                    return false;
-                }
+            Vector2 posOtroXZ = new Vector2(otroRobot.transform.position.x, otroRobot.transform.position.z);
+            if (Vector2.Distance(posOtroXZ, posRefXZ) < RadioOcupacionFisicaMutex)
+            {
+                return false;
             }
         }
 
@@ -251,13 +308,16 @@ public class RobotAMR : MonoBehaviour
 
     private void GestionarCompuertaMutex()
     {
-        if (enParadaSeguridadLiDAR || estadoActual == EstadoRobot.Interrumpido) return;
+        if (agente == null || !agente.enabled || !agente.isOnNavMesh) return;
+        if (enParadaSeguridadLiDAR || cediendoPasoAMR || estadoActual == EstadoRobot.Interrumpido || estadoActual == EstadoRobot.Apagado) return;
 
-        if (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando)
+        if (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando || estadoActual == EstadoRobot.Recargando)
         {
-            Transform objetivo = (estadoActual == EstadoRobot.En_Transito) ? destinoActual : zonaTransferencia;
+            Transform objetivo = (estadoActual == EstadoRobot.En_Transito)
+                ? destinoActual
+                : (estadoActual == EstadoRobot.Transportando ? zonaTransferencia : null);
 
-            // Liberar cualquier cerrojo previo que ya no sea el objetivo activo si el robot ya salió del radio físico
+            // Liberar cualquier cerrojo previo (o de muelle al descender bajo Z < -5.5f) si ya no es el objetivo activo
             if (zonasReservadasMutex.Count > 0)
             {
                 List<Transform> obsoletas = null;
@@ -266,8 +326,9 @@ public class RobotAMR : MonoBehaviour
                 {
                     if (kvp.Value == this && kvp.Key != null && kvp.Key != objetivo)
                     {
+                        bool esMuelleDesocupado = kvp.Key.position.z > -4.0f && transform.position.z < -5.5f;
                         Vector2 posZonaXZ = new Vector2(kvp.Key.position.x, kvp.Key.position.z);
-                        if (Vector2.Distance(posActualXZ, posZonaXZ) > RadioOcupacionFisicaMutex)
+                        if (esMuelleDesocupado || Vector2.Distance(posActualXZ, posZonaXZ) > RadioOcupacionFisicaMutex)
                         {
                             if (obsoletas == null) obsoletas = new List<Transform>();
                             obsoletas.Add(kvp.Key);
@@ -280,10 +341,20 @@ public class RobotAMR : MonoBehaviour
                 }
             }
 
-            if (objetivo != null && agente != null && colaWaypoints.Count == 0 && !agente.pathPending)
+            if (objetivo != null && agente != null && !agente.pathPending)
             {
-                if (agente.remainingDistance <= DistanciaCompuertaMutex &&
-                    DistanciaPlanaADestinoAgente() <= DistanciaCompuertaMutex + 0.25f)
+                bool enDistanciaFinal = colaWaypoints.Count == 0 &&
+                                        agente.remainingDistance <= DistanciaCompuertaMutex &&
+                                        DistanciaPlanaADestinoAgente() <= DistanciaCompuertaMutex + 0.25f;
+
+                bool enAproximacionPreRampa = estadoActual == EstadoRobot.Transportando &&
+                                              objetivo == zonaTransferencia &&
+                                              colaWaypoints.Count <= 1 &&
+                                              transform.position.z > -11.0f &&
+                                              transform.position.z < -5.5f &&
+                                              Mathf.Abs(transform.position.x - objetivo.position.x) < 2.5f;
+
+                if (enDistanciaFinal || enAproximacionPreRampa)
                 {
                     if (!IntentarReservarZonaMutex(objetivo))
                     {
@@ -513,6 +584,8 @@ public class RobotAMR : MonoBehaviour
         bool destinoEnSalaCarga = destino.z < ZUmbralPortico;
         bool origenEnCamion = origen.z > -1.0f;
         bool destinoEnCamion = destino.z > -1.0f;
+        bool origenEnZonaMuelle = !origenEnSalaCarga && !destinoEnCamion && origen.z > -4.5f && origen.x > 18.0f;
+        float xCarrilEvacuacion = origenEnZonaMuelle ? (xOrigen - 2.20f) : xOrigen;
 
         // Caso 1: Ambos puntos dentro de la Sala de Carga
         if (origenEnSalaCarga && destinoEnSalaCarga)
@@ -530,9 +603,17 @@ public class RobotAMR : MonoBehaviour
         if (!origenEnSalaCarga && !destinoEnSalaCarga && Mathf.Abs(xOrigen - xDestino) <= 0.5f)
         {
             AgregarNodoRuta(nodos, origenNav);
-            if (origenEnCamion && !destinoEnCamion)
+            if ((origenEnCamion || origenEnZonaMuelle) && !destinoEnCamion)
             {
-                AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(xOrigen, 0.0f, ZPieRampaCamion)));
+                if (origen.z > ZPieRampaCamion)
+                {
+                    AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(xOrigen, 0.0f, ZPieRampaCamion)));
+                }
+                if (destino.z < -7.0f)
+                {
+                    AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(xOrigen, 0.0f, -4.80f)));
+                    AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(xCarrilEvacuacion, 0.0f, -6.50f)));
+                }
             }
             else if (!origenEnCamion && destinoEnCamion)
             {
@@ -542,7 +623,7 @@ public class RobotAMR : MonoBehaviour
             return;
         }
 
-        float xSalidaAvenida = origenEnSalaCarga ? XPorticoSalidaNorte : xOrigen;
+        float xSalidaAvenida = origenEnSalaCarga ? XPorticoSalidaNorte : xCarrilEvacuacion;
         float xEntradaAvenida = destinoEnSalaCarga ? XPorticoEntradaSur : xDestino;
 
         // Selección de carril direccional en la Avenida Transversal:
@@ -551,28 +632,42 @@ public class RobotAMR : MonoBehaviour
 
         AgregarNodoRuta(nodos, origenNav);
 
-        // Si parte desde el interior del camión / rampa, alinear primero con el pie de rampa en suelo firme
-        if (origenEnCamion)
+        // Si parte desde el camión o pie de rampa, bajar recto y desviarse por el carril lateral izquierdo de evacuación
+        if ((origenEnCamion || origenEnZonaMuelle) && !destinoEnCamion)
+        {
+            if (origen.z > ZPieRampaCamion)
+            {
+                AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(xOrigen, 0.0f, ZPieRampaCamion)));
+            }
+            if (origenEnZonaMuelle)
+            {
+                AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(xOrigen, 0.0f, -4.80f)));
+                AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(xCarrilEvacuacion, 0.0f, -6.50f)));
+            }
+        }
+        else if (origenEnCamion)
         {
             AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(xOrigen, 0.0f, ZPieRampaCamion)));
         }
 
-        // 1. Salida hacia la Avenida Principal
+        // 1. Salida hacia la Avenida Principal (vía carril colector frontal Z = -51.80m en Sala de Carga)
         if (origenEnSalaCarga)
         {
-            AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(XPorticoSalidaNorte, 0.0f, origenNav.z)));
+            AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(origenNav.x, 0.0f, ZColectorSalaCarga)));
+            AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(XPorticoSalidaNorte, 0.0f, ZColectorSalaCarga)));
             AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(XPorticoSalidaNorte, 0.0f, zAvenida)));
         }
         else
         {
-            AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(xOrigen, 0.0f, zAvenida)));
+            AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(xCarrilEvacuacion, 0.0f, zAvenida)));
         }
 
-        // 2. Transición por la Avenida y Entrada al Destino
+        // 2. Transición por la Avenida y Entrada al Destino (vía carril colector Z = -51.80m hacia Pad)
         if (destinoEnSalaCarga)
         {
             AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(XPorticoEntradaSur, 0.0f, zAvenida)));
-            AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(XPorticoEntradaSur, 0.0f, destinoNav.z)));
+            AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(XPorticoEntradaSur, 0.0f, ZColectorSalaCarga)));
+            AgregarNodoRuta(nodos, AjustarPuntoNavMesh(new Vector3(destinoNav.x, 0.0f, ZColectorSalaCarga)));
             AgregarNodoRuta(nodos, destinoNav, true);
         }
         else
@@ -628,7 +723,7 @@ public class RobotAMR : MonoBehaviour
 
     private bool AvanzarColaWaypoints()
     {
-        if (agente == null || enParadaSeguridadLiDAR || enEsperaMutex || estadoActual == EstadoRobot.Interrumpido) return false;
+        if (agente == null || !agente.enabled || !agente.isOnNavMesh || enParadaSeguridadLiDAR || enEsperaMutex || cediendoPasoAMR || estadoActual == EstadoRobot.Interrumpido || estadoActual == EstadoRobot.Apagado) return false;
         if (colaWaypoints.Count == 0) return false;
 
         if (!agente.pathPending &&
@@ -670,6 +765,7 @@ public class RobotAMR : MonoBehaviour
 
     [Header("Ruteo TMS")]
     public int numCamionAsignado = 1;
+    public int slotLIFOAsignado = 0;
     public const float OffsetParadaRodillosCamion = 1.30f;
 
     public Vector3 ObtenerPosicionDescargaActiva()
@@ -677,7 +773,8 @@ public class RobotAMR : MonoBehaviour
         ModuloDespachoTMS tms = (managerEVE != null && managerEVE.gestorTMS != null) ? managerEVE.gestorTMS : ModuloDespachoTMS.Instance;
         if (tms != null)
         {
-            return tms.ObtenerCoordenadaSlotActivo(numCamionAsignado);
+            int slotObjetivo = slotLIFOAsignado > 0 ? slotLIFOAsignado : tms.ObtenerSlotLIFOProyectado(numCamionAsignado);
+            return tms.ObtenerCoordenadaSlotLIFO(numCamionAsignado, slotObjetivo);
         }
         return zonaTransferencia != null ? zonaTransferencia.position : transform.position;
     }
@@ -688,13 +785,25 @@ public class RobotAMR : MonoBehaviour
         return new Vector3(posSlot.x, posSlot.y, posSlot.z - OffsetParadaRodillosCamion);
     }
 
+    private void LiberarReservaSlotTMS()
+    {
+        if (slotLIFOAsignado <= 0) return;
+
+        ModuloDespachoTMS tms = (managerEVE != null && managerEVE.gestorTMS != null) ? managerEVE.gestorTMS : ModuloDespachoTMS.Instance;
+        if (tms != null)
+        {
+            tms.CancelarReservaSlot(numCamionAsignado, slotLIFOAsignado);
+        }
+        slotLIFOAsignado = 0;
+    }
+
     private bool CalcularViabilidadOperativa(Pedido pedido, Transform destino, out float bateriaRestanteEstimada)
     {
-        // Si la zona de transferencia no ha sido resuelta para este pedido, consultar al TMS
+        // Si la zona de transferencia o el slot LIFO no han sido resueltos aún, consultar al TMS
         ModuloDespachoTMS tms = (managerEVE != null && managerEVE.gestorTMS != null) ? managerEVE.gestorTMS : ModuloDespachoTMS.Instance;
-        if (zonaTransferencia == null && tms != null)
+        if ((zonaTransferencia == null || slotLIFOAsignado <= 0) && tms != null)
         {
-            zonaTransferencia = tms.ConsultarMuelleDestino(pedido, out numCamionAsignado, out _);
+            zonaTransferencia = tms.ConsultarMuelleDestino(pedido, out numCamionAsignado, out slotLIFOAsignado);
         }
 
         float distanciaIda = CalcularDistanciaNavMesh(transform.position, destino.position, null, destino);
@@ -728,11 +837,16 @@ public class RobotAMR : MonoBehaviour
 
     public void AsignarMision(Pedido nuevoPedido, Transform destinoFisico)
     {
+        AsignarMision(nuevoPedido, destinoFisico, -1);
+    }
+
+    public void AsignarMision(Pedido nuevoPedido, Transform destinoFisico, int indiceFilaSecuencial)
+    {
         /* Regla de seguridad: Solo acepta misiones si está inactivo
         el return funciona como una pared que protege a la mision actual*/
-        if (estadoActual == EstadoRobot.Recargando)
+        if (estadoActual == EstadoRobot.Recargando || estadoActual == EstadoRobot.Apagado)
         {
-            Debug.LogWarning($"[{idRobot}]: Llamada a AsignarMision rechazada — unidad acoplada en estado Recargando.");
+            Debug.LogWarning($"[{idRobot}]: Llamada a AsignarMision rechazada — unidad en estado {estadoActual}.");
             return;
         }
         if (estadoActual != EstadoRobot.Inactivo) return;
@@ -748,7 +862,8 @@ public class RobotAMR : MonoBehaviour
         }
 
         pedidoActual = nuevoPedido;
-        
+        indiceFilaManifiesto = indiceFilaSecuencial >= 0 ? indiceFilaSecuencial : (managerEVE != null ? managerEVE.indicePedidoActual : 0);
+
         if (!CalcularViabilidadOperativa(pedidoActual, destinoFisico, out float bateriaProyectada))
         {
             destinoActual = destinoFisico;
@@ -762,7 +877,7 @@ public class RobotAMR : MonoBehaviour
             return;
         }
 
-        DashboardUI.Instance?.ActualizarEstadoManifiesto(managerEVE.indicePedidoActual, "EN TRÁNSITO", Color.yellow);
+        DashboardUI.Instance?.ActualizarEstadoManifiesto(indiceFilaManifiesto, "EN TRÁNSITO", Color.yellow);
         destinoActual = destinoFisico;
         enEsperaMutex = false;
         estadoActual = EstadoRobot.En_Transito;
@@ -785,9 +900,11 @@ public class RobotAMR : MonoBehaviour
 
         // Limpieza estricta de corrutinas y memoria de la misión abortada para evitar extracciones fantasma
         StopAllCoroutines();
+        LiberarReservaSlotTMS();
         LimpiarPalletTemporal();
         enParadaSeguridadLiDAR = false;
         enEsperaMutex = false;
+        cediendoPasoAMR = false;
         obstaculoDetectado = false;
         colaWaypoints.Clear();
         LiberarMutexDeRobot(this);
@@ -796,10 +913,14 @@ public class RobotAMR : MonoBehaviour
         zonaTransferencia = null;
 
         estadoActual = EstadoRobot.Recargando;
-        ActualizarJerarquiaNavegacion();
+
+        BoxCollider col = GetComponent<BoxCollider>();
+        if (col != null) col.enabled = true;
 
         if (agente != null)
         {
+            if (!agente.enabled) agente.enabled = true;
+            ActualizarJerarquiaNavegacion();
             agente.updateRotation = true;
             agente.isStopped = false;
             agente.ResetPath();
@@ -809,10 +930,103 @@ public class RobotAMR : MonoBehaviour
             agente.acceleration = aceleracionBase;
             TrazarRutaOrtogonal(posicionPad);
         }
+        else
+        {
+            ActualizarJerarquiaNavegacion();
+        }
 
         OnEstadoCambiado?.Invoke(estadoActual);
         Debug.Log($"<color=green>[CARGA INDUCTIVA]:</color> {gameObject.name} navegando a Pad de carga en {posicionPad}");
         DashboardUI.Instance?.RegistrarLog($"<color=green>[CARGA INDUCTIVA]:</color> {gameObject.name} navegando a Pad de recarga.");
+    }
+
+    public void InducirInterrupcionPreventivaBateria(float nuevaBateria)
+    {
+        bateriaActual = nuevaBateria;
+        enEsperaMutex = false;
+        cediendoPasoAMR = false;
+        estadoActual = EstadoRobot.Interrumpido;
+        ActualizarJerarquiaNavegacion();
+        if (agente != null && agente.enabled && agente.isOnNavMesh)
+        {
+            agente.isStopped = true;
+            agente.velocity = Vector3.zero;
+        }
+        OnEstadoCambiado?.Invoke(estadoActual);
+        DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
+    }
+
+    public Pedido ForzarApagadoCriticoBMS()
+    {
+        colapsoBMSArmadoPostDescarga = false;
+        Pedido pedidoHuerfano = pedidoActual;
+        bateriaActual = 2.4f;
+
+        if (pedidoHuerfano != null)
+        {
+            DashboardUI.Instance?.ActualizarEstadoManifiesto(indiceFilaManifiesto, "REASIGNADO (<3%)", new Color(0.98f, 0.45f, 0.09f));
+        }
+
+        StopAllCoroutines();
+        LiberarReservaSlotTMS();
+        LimpiarPalletTemporal();
+        if (palletActualGO != null)
+        {
+            Destroy(palletActualGO);
+            palletActualGO = null;
+        }
+        LiberarMutexDeRobot(this);
+
+        enParadaSeguridadLiDAR = false;
+        enEsperaMutex = false;
+        cediendoPasoAMR = false;
+        obstaculoDetectado = false;
+        colaWaypoints.Clear();
+        pedidoActual = null;
+        destinoActual = null;
+        zonaTransferencia = null;
+
+        if (agente != null)
+        {
+            if (agente.enabled && agente.isOnNavMesh)
+            {
+                agente.isStopped = true;
+                agente.ResetPath();
+                agente.velocity = Vector3.zero;
+            }
+            agente.enabled = false;
+        }
+
+        BoxCollider col = GetComponent<BoxCollider>();
+        if (col != null) col.enabled = false;
+
+        estadoActual = EstadoRobot.Apagado;
+        OnEstadoCambiado?.Invoke(estadoActual);
+        DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
+
+        return pedidoHuerfano;
+    }
+
+    public void FinalizarRescateEnPad(Vector3 posPad)
+    {
+        BoxCollider col = GetComponent<BoxCollider>();
+        if (col != null) col.enabled = true;
+
+        transform.position = posPad;
+        transform.rotation = Quaternion.identity;
+
+        if (agente != null)
+        {
+            agente.enabled = true;
+            agente.Warp(posPad);
+            agente.isStopped = true;
+            agente.velocity = Vector3.zero;
+        }
+
+        estadoActual = EstadoRobot.Recargando;
+        ActualizarJerarquiaNavegacion();
+        OnEstadoCambiado?.Invoke(estadoActual);
+        DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
     }
 
     public void EjecutarOverride()
@@ -839,15 +1053,16 @@ public class RobotAMR : MonoBehaviour
     public void AbortarMisionPorSeguridad()
     {
         DashboardUI.Instance?.MostrarEmergencia(false);
+        colapsoBMSArmadoPostDescarga = false;
 
         string idPallet = pedidoActual != null ? pedidoActual.id_pallet : "ORDEN";
-        int indicePedido = managerEVE != null ? managerEVE.indicePedidoActual : 0;
-        DashboardUI.Instance?.ActualizarEstadoManifiesto(indicePedido, "REPROGRAMADO", new Color(1.0f, 0.55f, 0.1f));
+        DashboardUI.Instance?.ActualizarEstadoManifiesto(indiceFilaManifiesto, "REPROGRAMADO", new Color(1.0f, 0.55f, 0.1f));
 
         DashboardUI.Instance?.RegistrarLog($"<color=#FFA500>[DECISIÓN GERENCIAL]:</color> Misión {idPallet} abortada preventivamente. Celda protegida al {bateriaActual:F1}%. Orden reprogramada.");
         Debug.Log($"<color=orange>[DECISIÓN GERENCIAL]:</color> Misión {idPallet} abortada preventivamente. Batería conservada al {bateriaActual:F1}%.");
 
         StopAllCoroutines();
+        LiberarReservaSlotTMS();
         LimpiarPalletTemporal();
         enParadaSeguridadLiDAR = false;
         enEsperaMutex = false;
@@ -1165,16 +1380,19 @@ public class RobotAMR : MonoBehaviour
         // Liberar reserva del rack extraído al iniciar retorno hacia muelle
         LiberarZonaMutex(destinoActual, this);
 
-        // Consultar o validar muelle de destino en ModuloDespachoTMS al iniciar retorno
-        if (managerEVE != null && managerEVE.gestorTMS != null)
+        // Consultar muelle de destino únicamente si aún no hay reserva activa para esta misión
+        if (zonaTransferencia == null || slotLIFOAsignado <= 0)
         {
-            Transform muelleDestino = managerEVE.gestorTMS.ConsultarMuelleDestino(pedidoActual, out numCamionAsignado, out _);
-            if (muelleDestino != null) zonaTransferencia = muelleDestino;
-        }
-        else if (ModuloDespachoTMS.Instance != null)
-        {
-            Transform muelleDestino = ModuloDespachoTMS.Instance.ConsultarMuelleDestino(pedidoActual, out numCamionAsignado, out _);
-            if (muelleDestino != null) zonaTransferencia = muelleDestino;
+            if (managerEVE != null && managerEVE.gestorTMS != null)
+            {
+                Transform muelleDestino = managerEVE.gestorTMS.ConsultarMuelleDestino(pedidoActual, out numCamionAsignado, out slotLIFOAsignado);
+                if (muelleDestino != null) zonaTransferencia = muelleDestino;
+            }
+            else if (ModuloDespachoTMS.Instance != null)
+            {
+                Transform muelleDestino = ModuloDespachoTMS.Instance.ConsultarMuelleDestino(pedidoActual, out numCamionAsignado, out slotLIFOAsignado);
+                if (muelleDestino != null) zonaTransferencia = muelleDestino;
+            }
         }
         
         if (zonaTransferencia != null)
@@ -1207,7 +1425,7 @@ public class RobotAMR : MonoBehaviour
         ActualizarJerarquiaNavegacion();
         OnEstadoCambiado?.Invoke(estadoActual);
 
-        DashboardUI.Instance?.ActualizarEstadoManifiesto(managerEVE.indicePedidoActual, "ENTREGADO", Color.green);
+        DashboardUI.Instance?.ActualizarEstadoManifiesto(indiceFilaManifiesto, "ENTREGADO", Color.green);
         Debug.Log("<color=magenta>LIFO:</color> Descargando estiba en Slot Flatbed del Camión por rodillos frontales.");
         DashboardUI.Instance?.RegistrarLog("LIFO: Descarga frontal por rodillos en camión.");
 
@@ -1273,12 +1491,13 @@ public class RobotAMR : MonoBehaviour
 
             if (tms != null)
             {
-                tms.RegistrarEstibaEnCamion(numCamionAsignado, pedidoActual, palletEntregado);
+                tms.RegistrarEstibaEnCamion(numCamionAsignado, pedidoActual, palletEntregado, slotLIFOAsignado);
             }
             else if (managerEVE != null)
             {
                 managerEVE.RegistrarEntregaLIFO(pedidoActual, palletEntregado);
             }
+            slotLIFOAsignado = 0;
         }
         else
         {
@@ -1316,6 +1535,27 @@ public class RobotAMR : MonoBehaviour
             yield return new WaitForSeconds(duracionRetroceso);
         }
 
+        if (colapsoBMSArmadoPostDescarga)
+        {
+            colapsoBMSArmadoPostDescarga = false;
+            LiberarMutexDeRobot(this);
+            pedidoActual = null;
+            destinoActual = null;
+            zonaTransferencia = null;
+
+            if (agente != null)
+            {
+                agente.speed = velocidadBase;
+                agente.acceleration = modoDegradacionActivo ? Mathf.Max(1.0f, aceleracionBase * 0.5f) : aceleracionBase;
+            }
+
+            if (managerEVE != null)
+            {
+                managerEVE.FinalizarEntregaYEjecutarColapsoBMS(this);
+                yield break;
+            }
+        }
+
         LiberarMutexDeRobot(this);
         estadoActual = EstadoRobot.Inactivo;
         ActualizarJerarquiaNavegacion();
@@ -1333,7 +1573,7 @@ public class RobotAMR : MonoBehaviour
 
         if (managerEVE != null)
         {
-            managerEVE.ConfirmarEntregaExitosa();
+            managerEVE.ConfirmarEntregaExitosa(this);
         }
     }
 
@@ -1491,10 +1731,191 @@ public class RobotAMR : MonoBehaviour
         return velocidadBase;
     }
 
+    private int ObtenerPrioridadVDA(RobotAMR r)
+    {
+        switch (r.estadoActual)
+        {
+            case EstadoRobot.Extrayendo:
+            case EstadoRobot.Entregando:
+            case EstadoRobot.Interrumpido:
+                return 4;
+            case EstadoRobot.Transportando:
+                return 3;
+            case EstadoRobot.En_Transito:
+                return 2;
+            case EstadoRobot.Recargando:
+                return 1;
+            default:
+                return 0;
+        }
+    }
+
+    private bool DebeCederPasoA(RobotAMR otro)
+    {
+        if (otro == null) return false;
+
+        // Regla 1: Nunca ceder el paso por burbuja a un AMR detenido esperando compuerta Mutex
+        if (otro.enEsperaMutex) return false;
+
+        // Regla 2: Quien evacúa la zona de muelle/rampas tiene prioridad absoluta ("Antes de entrar, deje salir")
+        bool yoEvacuando = EstaEvacuandoZonaMuelle();
+        bool otroEvacuando = otro.EstaEvacuandoZonaMuelle();
+        if (yoEvacuando && !otroEvacuando) return false;
+        if (!yoEvacuando && otroEvacuando) return true;
+
+        int miPrio = ObtenerPrioridadVDA(this);
+        int otroPrio = ObtenerPrioridadVDA(otro);
+        if (otroPrio != miPrio) return otroPrio > miPrio;
+        return ObtenerIndiceUnidad() > otro.ObtenerIndiceUnidad();
+    }
+
+    private void GestionarBurbujaProximidadVDA5050()
+    {
+        bool enMovimientoNavegable = estadoActual == EstadoRobot.En_Transito ||
+                                     estadoActual == EstadoRobot.Transportando ||
+                                     estadoActual == EstadoRobot.Recargando;
+
+        if (!enMovimientoNavegable || agente == null || !agente.enabled || !agente.isOnNavMesh)
+        {
+            cediendoPasoAMR = false;
+            tiempoDetenidoCediendo = 0f;
+            return;
+        }
+
+        // Ventana de inmunidad temporal para despejar cruces tras activarse el watchdog anti-deadlock
+        if (Time.time < tiempoInmunidadDespeje)
+        {
+            tiempoDetenidoCediendo = 0f;
+            if (cediendoPasoAMR)
+            {
+                cediendoPasoAMR = false;
+                if (!enParadaSeguridadLiDAR && !enEsperaMutex && estadoActual != EstadoRobot.Interrumpido)
+                {
+                    agente.isStopped = false;
+                }
+            }
+            return;
+        }
+
+        // Si ya está estacionado cargando en el Pad, no participa en evasión activa
+        if (estadoActual == EstadoRobot.Recargando && colaWaypoints.Count == 0 && !agente.pathPending && agente.remainingDistance <= 0.60f)
+        {
+            cediendoPasoAMR = false;
+            tiempoDetenidoCediendo = 0f;
+            return;
+        }
+
+        Vector2 posMia = new Vector2(transform.position.x, transform.position.z);
+        Vector2 dirMiMov = new Vector2(transform.forward.x, transform.forward.z);
+        if (agente.desiredVelocity.sqrMagnitude > 0.01f)
+        {
+            dirMiMov = new Vector2(agente.desiredVelocity.x, agente.desiredVelocity.z);
+        }
+        if (dirMiMov.sqrMagnitude > 0.0001f) dirMiMov.Normalize();
+
+        float umbral = cediendoPasoAMR ? RadioBurbujaSalidaVDA : RadioBurbujaEntradaVDA;
+        bool debeCeder = false;
+        RobotAMR otroEnConflicto = null;
+
+        for (int i = 0; i < flotaActiva.Count; i++)
+        {
+            RobotAMR otro = flotaActiva[i];
+            if (otro == null || otro == this || !otro.gameObject.activeInHierarchy) continue;
+            if (otro.estadoActual == EstadoRobot.Inactivo || otro.estadoActual == EstadoRobot.Apagado) continue;
+
+            // Ignorar a otro AMR si está estacionado en su Pad cargando (a menos que estemos justo en su área)
+            if (otro.estadoActual == EstadoRobot.Recargando && otro.agente != null && otro.agente.enabled && otro.agente.isStopped &&
+                Vector2.Distance(posMia, new Vector2(otro.transform.position.x, otro.transform.position.z)) >= 1.50f)
+            {
+                continue;
+            }
+
+            Vector2 posOtro = new Vector2(otro.transform.position.x, otro.transform.position.z);
+            Vector2 haciaOtro = posOtro - posMia;
+            float dist = haciaOtro.magnitude;
+
+            if (dist < umbral)
+            {
+                Vector2 dirHaciaOtro = dist > 0.001f ? (haciaOtro / dist) : Vector2.zero;
+                bool trayectoriasConvergen = Vector2.Dot(dirMiMov, dirHaciaOtro) > -0.15f || dist < 1.35f;
+
+                if (trayectoriasConvergen && DebeCederPasoA(otro))
+                {
+                    debeCeder = true;
+                    otroEnConflicto = otro;
+                    break;
+                }
+            }
+        }
+
+        if (debeCeder)
+        {
+            if (!cediendoPasoAMR)
+            {
+                cediendoPasoAMR = true;
+                agente.isStopped = true;
+                agente.velocity = Vector3.zero;
+            }
+
+            bool otroDetenido = otroEnConflicto != null &&
+                                (otroEnConflicto.cediendoPasoAMR ||
+                                 otroEnConflicto.enEsperaMutex ||
+                                 (otroEnConflicto.agente != null && otroEnConflicto.agente.velocity.sqrMagnitude < 0.04f));
+
+            if (otroDetenido)
+            {
+                tiempoDetenidoCediendo += Time.deltaTime;
+                bool tienePrioridadDesempate = EstaEvacuandoZonaMuelle() ||
+                                               (otroEnConflicto != null && ObtenerIndiceUnidad() < otroEnConflicto.ObtenerIndiceUnidad());
+                float limiteWatchdog = tienePrioridadDesempate ? 1.2f : 1.8f;
+
+                if (tiempoDetenidoCediendo >= limiteWatchdog)
+                {
+                    tiempoInmunidadDespeje = Time.time + 3.0f;
+                    tiempoDetenidoCediendo = 0f;
+                    cediendoPasoAMR = false;
+                    if (!enParadaSeguridadLiDAR && !enEsperaMutex && estadoActual != EstadoRobot.Interrumpido)
+                    {
+                        agente.isStopped = false;
+                    }
+                    Debug.Log($"<color=yellow>[VDA 5050 WATCHDOG]:</color> {idRobot} liberado por inmunidad de despeje (3.0s) ante bloqueo circular.");
+                }
+            }
+            else
+            {
+                tiempoDetenidoCediendo = 0f;
+            }
+        }
+        else
+        {
+            tiempoDetenidoCediendo = 0f;
+            if (cediendoPasoAMR)
+            {
+                cediendoPasoAMR = false;
+                if (!enParadaSeguridadLiDAR && !enEsperaMutex && estadoActual != EstadoRobot.Interrumpido)
+                {
+                    agente.isStopped = false;
+                }
+            }
+        }
+    }
+
     void Update()
     {
+        if (estadoActual == EstadoRobot.Apagado) return;
+
+        if (colapsoBMSArmadoPostDescarga && !TieneCargaFisica && transform.position.z < -2.5f)
+        {
+            colapsoBMSArmadoPostDescarga = false;
+            managerEVE?.EjecutarColapsoYRescateInmediato(this);
+            return;
+        }
+
         // Procesamiento activo del sensor LiDAR con Docking Mute (ISO 3691-4)
         ProcesarSensoresLiDAR();
+
+        // Burbuja de proximidad inter-AMR VDA 5050 (2.5m Yield / 2.8m Resume)
+        GestionarBurbujaProximidadVDA5050();
 
         // Transición fluida entre tramos ortogonales (VDA 5050) sin parada en esquinas intermedias
         bool cambioTramoWaypoint = AvanzarColaWaypoints();
@@ -1505,14 +1926,16 @@ public class RobotAMR : MonoBehaviour
             GestionarCompuertaMutex();
         }
 
-        // Consumo pasivo obligatorio por encendido de sistemas lógicos (blindado a 0% en parada de seguridad/interrupción/espera Mutex)
-        if (!enParadaSeguridadLiDAR && !enEsperaMutex && estadoActual != EstadoRobot.Interrumpido && estadoActual != EstadoRobot.Recargando)
+        // Consumo pasivo obligatorio por encendido de sistemas lógicos (blindado a 0% en parada de seguridad/interrupción/espera Mutex/cediendo paso)
+        if (!enParadaSeguridadLiDAR && !enEsperaMutex && !cediendoPasoAMR && estadoActual != EstadoRobot.Interrumpido && estadoActual != EstadoRobot.Recargando)
         {
             bateriaActual -= consumoIdle * Time.deltaTime;
         }
 
         // Matemáticas de Batería (Termodinámica Inyectada)
-        if (!enParadaSeguridadLiDAR && !enEsperaMutex && estadoActual != EstadoRobot.Interrumpido && (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando))
+        if (!enParadaSeguridadLiDAR && !enEsperaMutex && !cediendoPasoAMR && estadoActual != EstadoRobot.Interrumpido &&
+            (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando) &&
+            agente != null && agente.enabled)
         {
             float distanciaRecorrida = agente.velocity.magnitude * Time.deltaTime;
             if (distanciaRecorrida > 0)
@@ -1522,7 +1945,7 @@ public class RobotAMR : MonoBehaviour
                 {
                     gasto = distanciaRecorrida * coeficienteVacio;
                 }
-                else if (estadoActual == EstadoRobot.Transportando)
+                else if (estadoActual == EstadoRobot.Transportando && pedidoActual != null)
                 {
                     // Inyección de Ruido Termodinámico: Oscilación orgánica (Perlin Noise) para fricción e ineficiencia de motor (0.98 a 1.15)
                     float factorDeRuido = Mathf.Lerp(0.98f, 1.15f, Mathf.PerlinNoise(Time.time * 0.5f, 0f));
@@ -1537,7 +1960,7 @@ public class RobotAMR : MonoBehaviour
         bateriaActual = Mathf.Max(0f, bateriaActual);
         if (bateriaActual <= 0f && (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando))
         {
-            if (agente != null)
+            if (agente != null && agente.enabled && agente.isOnNavMesh)
             {
                 agente.isStopped = true;
                 agente.velocity = Vector3.zero;
@@ -1558,11 +1981,12 @@ public class RobotAMR : MonoBehaviour
             DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
         }
 
+        if (agente == null || !agente.enabled || !agente.isOnNavMesh) return;
         if (cambioTramoWaypoint || colaWaypoints.Count > 0) return;
 
         if (estadoActual == EstadoRobot.En_Transito)
         {
-            if (!enEsperaMutex && !agente.pathPending && agente.remainingDistance <= 0.15f && DistanciaPlanaADestinoAgente() <= 0.25f)
+            if (!enEsperaMutex && !cediendoPasoAMR && !agente.pathPending && agente.remainingDistance <= 0.15f && DistanciaPlanaADestinoAgente() <= 0.25f)
             {
                 estadoActual = EstadoRobot.Extrayendo;
                 ActualizarJerarquiaNavegacion();
@@ -1575,7 +1999,7 @@ public class RobotAMR : MonoBehaviour
         else if (estadoActual == EstadoRobot.Transportando)
         {
             // CRI-01 y MED-04: Detección de arribo exacto a la posición de parada previa al Slot LIFO (Offset 1.30m)
-            if (!enEsperaMutex && zonaTransferencia != null && !agente.pathPending && agente.remainingDistance <= 0.15f && DistanciaPlanaADestinoAgente() <= 0.25f)
+            if (!enEsperaMutex && !cediendoPasoAMR && zonaTransferencia != null && !agente.pathPending && agente.remainingDistance <= 0.15f && DistanciaPlanaADestinoAgente() <= 0.25f)
             {
                 StartCoroutine(ProcesoEntrega());
             }
@@ -1589,6 +2013,14 @@ public class RobotAMR : MonoBehaviour
                 // Tasa de recarga calibrada por compresión temporal 160x (20% -> 80% en ~24s)
                 bateriaActual = Mathf.Min(80.0f, bateriaActual + (Time.deltaTime * tasaRecargaSimulada));
                 DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
+
+                if (bateriaActual >= 80.0f)
+                {
+                    estadoActual = EstadoRobot.Inactivo;
+                    ActualizarJerarquiaNavegacion();
+                    OnEstadoCambiado?.Invoke(estadoActual);
+                    DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
+                }
             }
         }
     }

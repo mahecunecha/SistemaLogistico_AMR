@@ -1,0 +1,28 @@
+{
+    "id_lote": "LOTE-ERP-450",
+    "total_pallets": 450,
+    "peso_total_kg": 382500,
+    "pedidos": [
+        {
+            "id_pallet": "PAL-8491",
+            "nombre_producto": "CRubia Aguila (Lata 330ml)",
+            "codigo_sku": "AGU-RUB-330",
+            "peso_kg": 850,
+            "coordenada_bodega": "P1-C1-F1"
+        },
+        {
+            "id_pallet": "PAL-8492",
+            "nombre_producto": "CNegra ClubColombia (Botella 330ml)",
+            "codigo_sku": "CLU-NEG-330",
+            "peso_kg": 850,
+            "coordenada_bodega": "P1-C2-F1"
+        },
+        {
+            "id_pallet": "PAL-8493",
+            "nombre_producto": "CEspecial Oktoberfest (Barril 50L)",
+            "codigo_sku": "OKT-BAR-50L",
+            "peso_kg": 920,
+            "coordenada_bodega": "P2-C4-F1"
+        }
+    ]
+}

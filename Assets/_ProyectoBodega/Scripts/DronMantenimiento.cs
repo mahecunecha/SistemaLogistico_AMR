@@ -208,4 +208,97 @@ public class DronMantenimiento : MonoBehaviour
 
         ocupado = false;
     }
+
+    /// <summary>
+    /// Corrutina de rescate aéreo de 5 etapas para un AMR colapsado (&lt; 3% BMS):
+    /// - Etapa 1A (2.0s): Tránsito horizontal a cota Y=10.0m hasta el cenit del AMR apagado.
+    /// - Etapa 1B (2.0s): Descenso vertical puro hasta acoplarse sobre el chasis (+1.15m).
+    /// - Etapa 2  (2.5s): Acople magnético (SetParent) y elevación vertical hasta Y=8.5m.
+    /// - Etapa 3  (3.0s): Tránsito horizontal aéreo a Y=8.5m hasta el cenit del Pad Inductivo destino.
+    /// - Etapa 4  (2.0s): Descenso vertical hasta posar al AMR en posPadDestino, desemparentar y reactivar en Pad.
+    /// - Etapa 5  (2.0s): Ascenso vertical a Y=10.0m y retorno a la base aérea (-32, 10, -38).
+    /// </summary>
+    public IEnumerator EjecutarRescateAMRAbortado(RobotAMR amrApagado, Vector3 posPadDestino, Action onRescateCompletado = null, Action onElevacionCompletada = null)
+    {
+        if (amrApagado == null) yield break;
+
+        while (ocupado)
+        {
+            yield return null;
+        }
+
+        ocupado = true;
+        if (controlHelices != null)
+        {
+            controlHelices.isEngineOn = true;
+        }
+
+        Vector3 posAMR = amrApagado.transform.position;
+        Vector3 posCenitAMR = new Vector3(posAMR.x, posicionBaseTecho.y, posAMR.z);
+        Vector3 posAcopleAMR = new Vector3(posAMR.x, posAMR.y + 1.15f, posAMR.z);
+        Vector3 posElevadoAMR = new Vector3(posAMR.x, 8.5f, posAMR.z);
+        Vector3 posCenitPad85 = new Vector3(posPadDestino.x, 8.5f, posPadDestino.z);
+        Vector3 posDescensoPad = new Vector3(posPadDestino.x, posPadDestino.y + 1.15f, posPadDestino.z);
+        Vector3 posCenitPadTecho = new Vector3(posPadDestino.x, posicionBaseTecho.y, posPadDestino.z);
+
+        // Etapa 1A (2.0s): Vuelo a Y = 10.0m hasta el cenit del AMR apagado
+        yield return StartCoroutine(MoverTramoDron(transform.position, posCenitAMR, 2.0f, true));
+
+        // Etapa 1B (2.0s): Descenso vertical puro hasta Y_amr + 1.15m
+        yield return StartCoroutine(MoverTramoDron(posCenitAMR, posAcopleAMR, 2.0f, false));
+
+        // Etapa 2 (2.5s): Emparentar AMR apagado y elevar verticalmente hasta Y = 8.5m
+        amrApagado.transform.SetParent(transform, true);
+        yield return StartCoroutine(MoverTramoDron(posAcopleAMR, posElevadoAMR, 2.5f, false));
+        onElevacionCompletada?.Invoke();
+
+        // Etapa 3 (3.0s): Tránsito horizontal a Y = 8.5m hasta el cenit de posPadDestino
+        yield return StartCoroutine(MoverTramoDron(posElevadoAMR, posCenitPad85, 3.0f, true));
+
+        // Etapa 4 (2.0s): Descenso vertical hasta posar al AMR en posPadDestino, desemparentar y finalizar rescate
+        yield return StartCoroutine(MoverTramoDron(posCenitPad85, posDescensoPad, 2.0f, false));
+
+        amrApagado.transform.SetParent(null, true);
+        amrApagado.FinalizarRescateEnPad(posPadDestino);
+        onRescateCompletado?.Invoke();
+
+        // Etapa 5 (2.0s): Ascenso a Y = 10.0m y retorno a posicionBaseTecho
+        yield return StartCoroutine(MoverTramoDron(posDescensoPad, posCenitPadTecho, 0.7f, false));
+        yield return StartCoroutine(MoverTramoDron(posCenitPadTecho, posicionBaseTecho, 1.3f, true));
+
+        transform.position = posicionBaseTecho;
+        transform.rotation = rotacionBase;
+        ocupado = false;
+    }
+
+    private IEnumerator MoverTramoDron(Vector3 origen, Vector3 destino, float duracion, bool rotarHaciaDestino)
+    {
+        float dur = Mathf.Max(0.05f, duracion);
+        Vector3 dirPlana = destino - origen;
+        dirPlana.y = 0f;
+        Quaternion rotMirar = dirPlana.sqrMagnitude > 0.01f ? Quaternion.LookRotation(dirPlana) : rotacionBase;
+
+        float t = 0f;
+        while (t < dur)
+        {
+            t += Time.deltaTime;
+            float factor = Mathf.Clamp01(t / dur);
+            float smooth = Mathf.SmoothStep(0f, 1f, factor);
+
+            transform.position = Vector3.Lerp(origen, destino, smooth);
+            if (rotarHaciaDestino)
+            {
+                Quaternion rotObj = factor < 0.75f ? rotMirar : rotacionBase;
+                transform.rotation = Quaternion.Slerp(transform.rotation, rotObj, Time.deltaTime * 5f);
+            }
+            else
+            {
+                transform.rotation = rotacionBase;
+            }
+            yield return null;
+        }
+
+        transform.position = destino;
+        transform.rotation = rotacionBase;
+    }
 }
