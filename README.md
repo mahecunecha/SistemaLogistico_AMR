@@ -1,6 +1,5 @@
-Copia y pega este contenido directamente en el archivo `README.md` de la raíz de tu repositorio (`[https://github.com/mahecunecha/SistemaLogistico_AMR.git](https://github.com/mahecunecha/SistemaLogistico_AMR.git)`), ya que actualiza las rutas reales (`Assets/_ProyectoBodega/`), los 12 scripts, la flota de 3 AMRs, el dron de mantenimiento, los lotes ERP y la autoría definitiva de la versión `1.0`:
 
-```markdown
+
 # SistemaLogistico_AMR — Gemelo Digital de Despacho Táctico Nocturno
 
 [![Unity Version](https://img.shields.io/badge/Unity-2022.3.62f3%20LTS-black?style=flat&logo=unity)](https://unity.com/)
@@ -191,11 +190,6 @@ Proyecto formativo desarrollado en el **Centro de la Industria, la Empresa y los
 
 El código fuente C# desarrollado por el equipo (`Assets/_ProyectoBodega/Scripts/`) se distribuye bajo la **[Licencia MIT](https://www.google.com/search?q=LICENSE)**. Los modelos tridimensionales y tipografías de terceros alojados en `Assets/Plugins_Terceros/` y `Assets/_ProyectoBodega/Art/Fonts/` conservan sus licencias originales (*Unity Asset Store Standard EULA* y *SIL Open Font License 1.1*).
 
-```
 
-### Mensaje de Commit Sugerido para GitKraken
 
-* **Summary:** `docs(readme): actualizar README corporativo v1.0 con arquitectura multi-agente, SLA y suite documental`
-* **Description:** `Sincronizar estructura real de Assets/_ProyectoBodega, catálogo de 12 scripts, flota de 3 AMRs, dron de mantenimiento, contratos JSON ERP, roles del equipo y enlaces a los manuales oficiales APA 7.`
 
-```
