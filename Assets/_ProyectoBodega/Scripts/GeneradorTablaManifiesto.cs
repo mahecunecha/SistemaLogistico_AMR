@@ -128,8 +128,17 @@ public class GeneradorTablaManifiesto : MonoBehaviour
             columnas[2].text = plantilla != null && !string.IsNullOrEmpty(plantilla.codigo_sku) ? plantilla.codigo_sku : "SKU-STD";
             float peso = plantilla != null && plantilla.peso_kg > 0f ? plantilla.peso_kg : 420f;
             columnas[3].text = peso.ToString("F0") + " kg";
+
+            for (int c = 0; c < 4; c++)
+            {
+                if (columnas[c] == null) continue;
+                columnas[c].color = Color.white;
+                columnas[c].fontSize = 11f;
+            }
+
             columnas[4].text = "PENDIENTE";
             columnas[4].color = new Color(0.94f, 0.27f, 0.27f, 1f);
+            columnas[4].fontSize = 11f;
 
             if (DashboardUI.Instance != null && DashboardUI.Instance.textosEstadoManifiesto != null)
             {
@@ -204,8 +213,15 @@ public class GeneradorTablaManifiesto : MonoBehaviour
                 columnasResumenLote[1].text = "Lote ERP";
                 columnasResumenLote[2].text = "CONSOLIDADO";
                 columnasResumenLote[3].text = $"{sinInstanciar * 420f:F0} kg";
+                for (int c = 0; c < 4; c++)
+                {
+                    if (columnasResumenLote[c] == null) continue;
+                    columnasResumenLote[c].color = Color.white;
+                    columnasResumenLote[c].fontSize = 11f;
+                }
                 columnasResumenLote[4].text = "COLA WMS";
                 columnasResumenLote[4].color = new Color(0.22f, 0.74f, 0.97f, 1f);
+                columnasResumenLote[4].fontSize = 11f;
             }
         }
         else if (filaResumenGO != null)

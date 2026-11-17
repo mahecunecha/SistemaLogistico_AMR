@@ -20,7 +20,14 @@ public class RobotAMR : MonoBehaviour
     public float coeficienteCarga = 0.00142f;
     public float consumoIdle = 0.0010f;
 
-    [Header("Recarga Inductiva (Compresión 8h -> 3min = 160x)")]
+    [Header("Gestión de Pausa Preventiva y Relevo")]
+    public EstadoRobot estadoPreInterrupcionBateria = EstadoRobot.Inactivo;
+    public bool enPausaPreventivaBateria20 = false;
+    public bool relevoDiferidoPostEntrega = false;
+
+    [Header("Recarga Inductiva KUKA KMP 1500P (20% -> 80% en 1h = 1.0%/min)")]
+    // KUKA KMP 1500P Datasheet: Charge from 20% to 80% within 1 hour (60% / 3600s = 0.0166667% / s)
+    public float tasaRecargaPorSegundo = 60.0f / 3600.0f; // 0.0166667f %/s (1.0% por minuto real)
     public const float FactorCompresionTurno = 28800f / 180f; // 160x
     public float tiempoRecargaRealSegundos = 3840f;
     private float tasaRecargaSimulada => (80.0f - 20.0f) / (tiempoRecargaRealSegundos / FactorCompresionTurno); // 2.50f
@@ -867,6 +874,9 @@ public class RobotAMR : MonoBehaviour
         if (!CalcularViabilidadOperativa(pedidoActual, destinoFisico, out float bateriaProyectada))
         {
             destinoActual = destinoFisico;
+            if (managerEVE != null) managerEVE.amrEnAlertaBateria20 = this;
+            estadoPreInterrupcionBateria = EstadoRobot.Inactivo;
+            enPausaPreventivaBateria20 = false;
             Debug.Log("<color=#10B981>[FLUJO]: 6. Pedido 3 evaluado. Emergencia de Batería (Ind. 5.0) disparada. Esperando decisión del supervisor.</color>");
             DashboardUI.Instance?.RegistrarLog($"<color=red>[ALERTA PREDICTIVA] Misión inviable. Retorno proyectado: {bateriaProyectada:F1}% (Umbral LiFePO4: {UmbralSeguridadLiFePO4:F0}%). Detención preventiva.</color>");
             DashboardUI.Instance?.MostrarEmergencia(true, bateriaProyectada, 3.2f);
@@ -942,6 +952,8 @@ public class RobotAMR : MonoBehaviour
 
     public void InducirInterrupcionPreventivaBateria(float nuevaBateria)
     {
+        estadoPreInterrupcionBateria = estadoActual;
+        enPausaPreventivaBateria20 = true;
         bateriaActual = nuevaBateria;
         enEsperaMutex = false;
         cediendoPasoAMR = false;
@@ -954,6 +966,20 @@ public class RobotAMR : MonoBehaviour
         }
         OnEstadoCambiado?.Invoke(estadoActual);
         DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
+    }
+
+    public void ReanudarTrasRelevoDiferido()
+    {
+        relevoDiferidoPostEntrega = true;
+        enPausaPreventivaBateria20 = false;
+        estadoActual = EstadoRobot.Transportando;
+        ActualizarJerarquiaNavegacion();
+        if (agente != null && agente.enabled && agente.isOnNavMesh)
+        {
+            agente.isStopped = false;
+            agente.speed = velocidadBase * 0.65f;
+        }
+        OnEstadoCambiado?.Invoke(estadoActual);
     }
 
     public Pedido ForzarApagadoCriticoBMS()
@@ -1032,22 +1058,56 @@ public class RobotAMR : MonoBehaviour
     public void EjecutarOverride()
     {
         DashboardUI.Instance?.MostrarEmergencia(false);
+        DirectorCinematico.Instance?.LiberarFocoIncidente(this);
         enEsperaMutex = false;
+
+        modoDegradacionActivo = true;
+        coeficienteCarga *= 1.3f;
+
+        if (enPausaPreventivaBateria20)
+        {
+            enPausaPreventivaBateria20 = false;
+            if (agente != null)
+            {
+                agente.speed = velocidadBase * 0.5f;
+                agente.acceleration = Mathf.Max(1.0f, aceleracionBase * 0.5f);
+            }
+
+            EstadoRobot estadoRestaurado = (estadoPreInterrupcionBateria != EstadoRobot.Inactivo && estadoPreInterrupcionBateria != EstadoRobot.Interrumpido)
+                ? estadoPreInterrupcionBateria
+                : (TieneCargaFisica ? EstadoRobot.Transportando : EstadoRobot.En_Transito);
+
+            estadoActual = estadoRestaurado;
+            ActualizarJerarquiaNavegacion();
+
+            if (agente != null && agente.enabled && agente.isOnNavMesh)
+            {
+                agente.isStopped = false;
+            }
+
+            OnEstadoCambiado?.Invoke(estadoActual);
+            DashboardUI.Instance?.RegistrarLog($"<color=orange>[OVERRIDE EJECUTADO] {idRobot} reanuda misión ({estadoActual}) en caliente. Degradación térmica activa: Velocidad -50%, Aceleración -50%, Consumo +30%.</color>");
+            Debug.Log($"<color=orange>[OVERRIDE EJECUTADO] {idRobot} reanuda misión ({estadoActual}) en caliente. Degradación térmica activa.</color>");
+            return;
+        }
+
+        // Flujo si estaba Inactivo antes de iniciar ruta
         estadoActual = EstadoRobot.En_Transito;
         ActualizarJerarquiaNavegacion();
-        if (agente != null) agente.isStopped = false;
-        
-        modoDegradacionActivo = true;
-        if (agente != null) agente.acceleration = Mathf.Max(1.0f, agente.acceleration * 0.5f);
-        coeficienteCarga *= 1.3f;
+        if (agente != null)
+        {
+            agente.isStopped = false;
+            agente.speed = velocidadBase * 0.5f;
+            agente.acceleration = Mathf.Max(1.0f, aceleracionBase * 0.5f);
+        }
 
         if (destinoActual != null)
         {
             TrazarRutaOrtogonal(destinoActual.position);
         }
-        
+
         OnEstadoCambiado?.Invoke(estadoActual);
-        DashboardUI.Instance?.RegistrarLog("<color=orange>[OVERRIDE EJECUTADO] Protocolo de contingencia forzado. Modo de degradación térmica activo: Aceleración -50%, Consumo +30%.</color>");
+        DashboardUI.Instance?.RegistrarLog($"<color=orange>[OVERRIDE EJECUTADO] {idRobot}: Protocolo de contingencia forzado. Modo de degradación térmica activo: Aceleración -50%, Consumo +30%.</color>");
     }
 
     public void AbortarMisionPorSeguridad()
@@ -1556,6 +1616,32 @@ public class RobotAMR : MonoBehaviour
             }
         }
 
+        if (relevoDiferidoPostEntrega)
+        {
+            relevoDiferidoPostEntrega = false;
+            LiberarMutexDeRobot(this);
+            pedidoActual = null;
+            destinoActual = null;
+            zonaTransferencia = null;
+
+            if (managerEVE != null)
+            {
+                managerEVE.palletsEnColaWMS = Mathf.Max(0, managerEVE.palletsEnColaWMS - 1);
+                managerEVE.palletsCompletadosTurno++;
+                FindFirstObjectByType<GeneradorTablaManifiesto>()?.ActualizarResumenColaEnVivo(managerEVE.palletsEnColaWMS);
+            }
+
+            if (agente != null)
+            {
+                agente.speed = velocidadBase;
+                agente.acceleration = modoDegradacionActivo ? Mathf.Max(1.0f, aceleracionBase * 0.5f) : aceleracionBase;
+            }
+
+            Vector3 posPad = (managerEVE != null) ? managerEVE.ObtenerPosicionPadPorUnidad(this) : transform.position;
+            EnviarACargaInductiva(posPad);
+            yield break;
+        }
+
         LiberarMutexDeRobot(this);
         estadoActual = EstadoRobot.Inactivo;
         ActualizarJerarquiaNavegacion();
@@ -2010,8 +2096,8 @@ public class RobotAMR : MonoBehaviour
             {
                 // Llegó al pad de inducción. Frenar y recargar progresivamente.
                 agente.isStopped = true;
-                // Tasa de recarga calibrada por compresión temporal 160x (20% -> 80% en ~24s)
-                bateriaActual = Mathf.Min(80.0f, bateriaActual + (Time.deltaTime * tasaRecargaSimulada));
+                // KUKA KMP 1500P Datasheet: Charge from 20% to 80% within 1 hour (60% / 3600s = 0.0166667% / s = 1.0% por minuto real)
+                bateriaActual = Mathf.Min(80.0f, bateriaActual + (Time.deltaTime * tasaRecargaPorSegundo));
                 DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
 
                 if (bateriaActual >= 80.0f)

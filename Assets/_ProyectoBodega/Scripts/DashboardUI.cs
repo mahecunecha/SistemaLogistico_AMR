@@ -241,10 +241,17 @@ public class DashboardUI : MonoBehaviour
 
         MostrarEmergencia(false);
         RobotManagerEVE eve = FindFirstObjectByType<RobotManagerEVE>();
-        RobotAMR robot = (eve != null && eve.robotEjecutor != null) ? eve.robotEjecutor : UnityEngine.Object.FindObjectOfType<RobotAMR>();
-        if (robot != null)
+        if (eve != null)
         {
-            robot.EjecutarOverride();
+            eve.AutorizarOverrideBateria();
+        }
+        else
+        {
+            RobotAMR robot = UnityEngine.Object.FindObjectOfType<RobotAMR>();
+            if (robot != null)
+            {
+                robot.EjecutarOverride();
+            }
         }
     }
 
@@ -270,11 +277,14 @@ public class DashboardUI : MonoBehaviour
 
         MostrarEmergencia(false);
         RobotManagerEVE eve = FindFirstObjectByType<RobotManagerEVE>();
-        RobotAMR robot = (eve != null && eve.robotEjecutor != null) ? eve.robotEjecutor : UnityEngine.Object.FindObjectOfType<RobotAMR>();
+        RobotAMR robot = (eve != null && eve.amrEnAlertaBateria20 != null)
+            ? eve.amrEnAlertaBateria20
+            : ((eve != null && eve.robotEjecutor != null) ? eve.robotEjecutor : UnityEngine.Object.FindObjectOfType<RobotAMR>());
         if (robot != null)
         {
             robot.AbortarMisionPorSeguridad();
         }
+        if (eve != null) eve.amrEnAlertaBateria20 = null;
     }
 
     private void ResolverDecisionHorizonte(bool aprobarExpansion)
@@ -423,16 +433,17 @@ public class DashboardUI : MonoBehaviour
         if (panelFlotaRect == null) InicializarPanelesColapsables();
         if (filaAMR03 == null && panelFlotaRect != null)
         {
-            Transform t = panelFlotaRect.Find("Fila_AMR_03");
+            Transform t = panelFlotaRect.Find("Scroll_Flota/Viewport/Content_Flota/Fila_AMR_03")
+                       ?? panelFlotaRect.Find("Fila_AMR_03");
             if (t != null) filaAMR03 = t.gameObject;
         }
 
         amr03Habilitado = activo;
-        alturaOriginalFlota = activo ? 650f : 502f;
+        alturaOriginalFlota = 502f;
 
         if (filaAMR03 != null)
         {
-            filaAMR03.SetActive(activo && flotaExpandida);
+            filaAMR03.SetActive(activo);
 
             if (telemetriaAMR03 != null)
             {
@@ -448,6 +459,11 @@ public class DashboardUI : MonoBehaviour
                     var tmp = tEstado.GetComponent<TextMeshProUGUI>();
                     if (tmp != null) tmp.text = estadoTexto;
                 }
+            }
+
+            if (filaAMR03.transform.parent is RectTransform contentRect)
+            {
+                LayoutRebuilder.ForceRebuildLayoutImmediate(contentRect);
             }
         }
 
@@ -620,44 +636,39 @@ public class DashboardUI : MonoBehaviour
         if (panelFlotaRect == null) return;
 
         flotaExpandida = expandir;
+        alturaOriginalFlota = 502f;
+        Transform scrollFlota = panelFlotaRect.Find("Scroll_Flota");
 
         if (expandir)
         {
-            float alturaBase = amr03Habilitado ? 650f : 502f;
-            float targetHeight = alturaOriginalFlota > 74f ? alturaOriginalFlota : alturaBase;
-            panelFlotaRect.sizeDelta = new Vector2(panelFlotaRect.sizeDelta.x, targetHeight);
-            for (int i = 0; i < panelFlotaRect.childCount; i++)
+            panelFlotaRect.sizeDelta = new Vector2(panelFlotaRect.sizeDelta.x, alturaOriginalFlota);
+            if (scrollFlota != null)
             {
-                Transform child = panelFlotaRect.GetChild(i);
-                if (child.name == "Fila_AMR_03")
+                for (int i = 0; i < panelFlotaRect.childCount; i++)
                 {
-                    child.gameObject.SetActive(amr03Habilitado);
+                    panelFlotaRect.GetChild(i).gameObject.SetActive(true);
                 }
-                else
+                Transform fila03 = scrollFlota.Find("Viewport/Content_Flota/Fila_AMR_03");
+                if (fila03 != null) fila03.gameObject.SetActive(amr03Habilitado);
+            }
+            else
+            {
+                for (int i = 0; i < panelFlotaRect.childCount; i++)
                 {
-                    child.gameObject.SetActive(true);
+                    Transform child = panelFlotaRect.GetChild(i);
+                    child.gameObject.SetActive(child.name != "Fila_AMR_03" || amr03Habilitado);
                 }
             }
             if (txtBtnToggleFlota != null) txtBtnToggleFlota.text = "[-]";
         }
         else
         {
-            if (panelFlotaRect.sizeDelta.y > 74f)
-            {
-                alturaOriginalFlota = panelFlotaRect.sizeDelta.y;
-            }
             // Conserva Header_Flota y Banner_Turno_Contextual (norma ISA-101)
             for (int i = 0; i < panelFlotaRect.childCount; i++)
             {
                 Transform child = panelFlotaRect.GetChild(i);
-                if (child.name == "Header_Flota" || child.name == "Banner_Turno_Contextual")
-                {
-                    child.gameObject.SetActive(true);
-                }
-                else
-                {
-                    child.gameObject.SetActive(false);
-                }
+                bool conservar = child.name == "Header_Flota" || child.name == "Banner_Turno_Contextual";
+                child.gameObject.SetActive(conservar);
             }
             panelFlotaRect.sizeDelta = new Vector2(panelFlotaRect.sizeDelta.x, 74f);
             if (txtBtnToggleFlota != null) txtBtnToggleFlota.text = "[+]";

@@ -41,6 +41,7 @@ public class RobotManagerEVE : MonoBehaviour
     [Header("Base de Datos Local")]
     public Manifiesto manifiestoActual;
     public RobotAMR robotEjecutor;
+    public RobotAMR amrEnAlertaBateria20;
     public int indicePedidoActual = 0;
     public bool turnoIniciado = false;
     private bool sesionOperativaIniciada = false;
@@ -613,17 +614,49 @@ public class RobotManagerEVE : MonoBehaviour
         DespacharColaDisponible();
     }
 
+    public void AutorizarOverrideBateria()
+    {
+        DashboardUI.Instance?.MostrarEmergencia(false);
+
+        RobotAMR objetivo = (amrEnAlertaBateria20 != null && amrEnAlertaBateria20.estadoActual == RobotAMR.EstadoRobot.Interrumpido)
+            ? amrEnAlertaBateria20
+            : ((robotEjecutor != null && robotEjecutor.estadoActual == RobotAMR.EstadoRobot.Interrumpido)
+                ? robotEjecutor
+                : (robotAMR_01 != null && robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Interrumpido
+                    ? robotAMR_01
+                    : (robotAMR_02 != null && robotAMR_02.estadoActual == RobotAMR.EstadoRobot.Interrumpido
+                        ? robotAMR_02
+                        : (robotAMR_03 != null && robotAMR_03.estadoActual == RobotAMR.EstadoRobot.Interrumpido
+                            ? robotAMR_03
+                            : amrEnAlertaBateria20))));
+
+        if (objetivo != null)
+        {
+            objetivo.EjecutarOverride();
+        }
+        else if (robotEjecutor != null)
+        {
+            robotEjecutor.EjecutarOverride();
+        }
+
+        amrEnAlertaBateria20 = null;
+    }
+
     public void EjecutarRelevoFlota24_7()
     {
         DashboardUI.Instance?.MostrarEmergencia(false);
 
-        RobotAMR robotSaliente = (robotEjecutor != null && robotEjecutor.estadoActual == RobotAMR.EstadoRobot.Interrumpido)
-            ? robotEjecutor
-            : (robotAMR_01 != null && robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Interrumpido
-                ? robotAMR_01
-                : (robotAMR_02 != null && robotAMR_02.estadoActual == RobotAMR.EstadoRobot.Interrumpido
-                    ? robotAMR_02
-                    : (robotAMR_01 != null ? robotAMR_01 : robotEjecutor)));
+        RobotAMR robotSaliente = (amrEnAlertaBateria20 != null && amrEnAlertaBateria20.estadoActual == RobotAMR.EstadoRobot.Interrumpido)
+            ? amrEnAlertaBateria20
+            : ((robotEjecutor != null && robotEjecutor.estadoActual == RobotAMR.EstadoRobot.Interrumpido)
+                ? robotEjecutor
+                : (robotAMR_01 != null && robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Interrumpido
+                    ? robotAMR_01
+                    : (robotAMR_02 != null && robotAMR_02.estadoActual == RobotAMR.EstadoRobot.Interrumpido
+                        ? robotAMR_02
+                        : (robotAMR_03 != null && robotAMR_03.estadoActual == RobotAMR.EstadoRobot.Interrumpido
+                            ? robotAMR_03
+                            : (robotAMR_01 != null ? robotAMR_01 : robotEjecutor)))));
 
         RobotAMR robotRelevo = null;
         if (robotAMR_02 != null && robotAMR_02 != robotSaliente && robotAMR_02.estadoActual == RobotAMR.EstadoRobot.Inactivo)
@@ -640,39 +673,70 @@ public class RobotManagerEVE : MonoBehaviour
             robotRelevo = robotAMR_01;
         }
 
-        if (robotRelevo != null)
-        {
-            DirectorCinematico.Instance?.RelevarRobotActivo(robotRelevo);
-            relevo24_7Activo = (robotRelevo == robotAMR_02);
-            robotEjecutor = robotRelevo;
-        }
+        bool tieneCarga = robotSaliente != null && (robotSaliente.TieneCargaFisica || robotSaliente.estadoPreInterrupcionBateria == RobotAMR.EstadoRobot.Transportando);
 
-        Pedido pedidoInterrumpido = robotSaliente != null ? robotSaliente.PedidoActual : null;
-
-        if (robotSaliente != null && robotSaliente != robotRelevo)
+        if (tieneCarga)
         {
-            Vector3 destinoPad = ObtenerPosicionPadPorUnidad(robotSaliente);
-            robotSaliente.EnviarACargaInductiva(destinoPad);
-        }
+            // Caso B: El AMR YA tiene el pallet encima -> Reanudar para terminar entrega y diferir recarga
+            robotSaliente.ReanudarTrasRelevoDiferido();
+            DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[RELEVO 24/7]:</color> {robotSaliente.idRobot} transportando estiba. Completará entrega en muelle antes de acoplarse al Pad.");
 
-        if (robotRelevo != null)
-        {
-            Pedido pedidoPendiente = pedidoInterrumpido;
-            if (pedidoPendiente == null && plantillaPedidosFisicos != null && plantillaPedidosFisicos.Count > 0)
+            // Desplegar inmediatamente la unidad de soporte libre para el siguiente pedido de la cola WMS
+            if (robotRelevo != null)
             {
-                pedidoPendiente = plantillaPedidosFisicos[Mathf.Abs(indicePedidoActual) % plantillaPedidosFisicos.Count];
-                indicePedidoActual++;
+                DirectorCinematico.Instance?.RelevarRobotActivo(robotRelevo);
+                DirectorCinematico.Instance?.LiberarFocoIncidente(robotRelevo);
+                relevo24_7Activo = (robotRelevo == robotAMR_02);
+                robotEjecutor = robotRelevo;
+                DespacharColaDisponible(robotRelevo);
             }
-
-            if (pedidoPendiente != null)
+            else
             {
-                DespacharPedidoEspecificoARobot(robotRelevo, pedidoPendiente);
+                DirectorCinematico.Instance?.LiberarFocoIncidente(robotSaliente);
             }
         }
+        else
+        {
+            // Caso A: El AMR aún NO tiene pallet físico encima -> Desviar inmediatamente a recargar
+            Pedido pedidoInterrumpido = robotSaliente != null ? robotSaliente.PedidoActual : null;
+
+            if (robotSaliente != null && robotSaliente != robotRelevo)
+            {
+                robotSaliente.enPausaPreventivaBateria20 = false;
+                Vector3 destinoPad = ObtenerPosicionPadPorUnidad(robotSaliente);
+                robotSaliente.EnviarACargaInductiva(destinoPad);
+            }
+
+            if (robotRelevo != null)
+            {
+                DirectorCinematico.Instance?.RelevarRobotActivo(robotRelevo);
+                DirectorCinematico.Instance?.LiberarFocoIncidente(robotRelevo);
+                relevo24_7Activo = (robotRelevo == robotAMR_02);
+                robotEjecutor = robotRelevo;
+
+                Pedido pedidoPendiente = pedidoInterrumpido;
+                if (pedidoPendiente == null && plantillaPedidosFisicos != null && plantillaPedidosFisicos.Count > 0)
+                {
+                    pedidoPendiente = plantillaPedidosFisicos[Mathf.Abs(indicePedidoActual) % plantillaPedidosFisicos.Count];
+                    indicePedidoActual++;
+                }
+
+                if (pedidoPendiente != null)
+                {
+                    DespacharPedidoEspecificoARobot(robotRelevo, pedidoPendiente);
+                }
+            }
+            else
+            {
+                DirectorCinematico.Instance?.LiberarFocoIncidente(null);
+            }
+        }
+
+        amrEnAlertaBateria20 = null;
 
         string idSaliente = robotSaliente != null ? robotSaliente.idRobot : "AMR";
         string idRelevo = robotRelevo != null ? robotRelevo.idRobot : "SOPORTE";
-        string mensajeRelevo = $"[RELEVO 24/7]: {idSaliente} acoplado a carga inductiva en su Pad. {idRelevo} desplegado para continuar cola WMS.";
+        string mensajeRelevo = $"[RELEVO 24/7]: Gestión completada para {idSaliente}. {idRelevo} activo en cola WMS.";
         DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8><b>{mensajeRelevo}</b></color>");
         Debug.Log($"<color=cyan>{mensajeRelevo}</color>");
     }
@@ -686,6 +750,7 @@ public class RobotManagerEVE : MonoBehaviour
             return;
         }
 
+        amrEnAlertaBateria20 = objetivo;
         objetivo.InducirInterrupcionPreventivaBateria(20.8f);
         robotEjecutor = objetivo;
         DirectorCinematico.Instance?.EnfocarIncidenteCritico(objetivo.transform);

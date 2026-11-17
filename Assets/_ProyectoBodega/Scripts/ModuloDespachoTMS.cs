@@ -11,6 +11,11 @@ public class ModuloDespachoTMS : MonoBehaviour
     public Transform muelleCamion02;
     public Transform muelleCamion03;
 
+    [Header("Compuertas Traseras (Sellado 3/3)")]
+    public GameObject puertaCerradaCamion1;
+    public GameObject puertaCerradaCamion2;
+    public GameObject puertaCerradaCamion3;
+
     [Header("Trazabilidad LIFO por Camión")]
     private Stack<Pedido> matrizLIFOCamion1 = new Stack<Pedido>();
     private Stack<Pedido> matrizLIFOCamion2 = new Stack<Pedido>();
@@ -31,6 +36,8 @@ public class ModuloDespachoTMS : MonoBehaviour
     // Índices 1..3 correspondientes a Muelle_Camion_01..03
     private readonly int[] slotsReservados = new int[4];
     private readonly bool[] renovacionEnCurso = new bool[4];
+    private readonly bool[] camionSellado = new bool[4];
+    private bool reinicioConvoyEnCurso = false;
     private int camionTurnoActual = 1;
 
     public Stack<Pedido> MatrizLIFOCamion1 => matrizLIFOCamion1;
@@ -66,6 +73,51 @@ public class ModuloDespachoTMS : MonoBehaviour
             GameObject m3 = GameObject.Find("Muelle_Camion_03");
             if (m3 != null) muelleCamion03 = m3.transform;
         }
+
+        ResolverPuertasCerradas();
+        AbrirTodasLasCompuertas();
+    }
+
+    private void ResolverPuertasCerradas()
+    {
+        if (puertaCerradaCamion1 == null && muelleCamion01 != null && muelleCamion01.parent != null)
+        {
+            Transform t = muelleCamion01.parent.Find("Carroceria_Trailer/Puerta_Trasera_Cerrada");
+            if (t != null) puertaCerradaCamion1 = t.gameObject;
+        }
+        if (puertaCerradaCamion2 == null && muelleCamion02 != null && muelleCamion02.parent != null)
+        {
+            Transform t = muelleCamion02.parent.Find("Carroceria_Trailer/Puerta_Trasera_Cerrada");
+            if (t != null) puertaCerradaCamion2 = t.gameObject;
+        }
+        if (puertaCerradaCamion3 == null && muelleCamion03 != null && muelleCamion03.parent != null)
+        {
+            Transform t = muelleCamion03.parent.Find("Carroceria_Trailer/Puerta_Trasera_Cerrada");
+            if (t != null) puertaCerradaCamion3 = t.gameObject;
+        }
+    }
+
+    private void ConfigurarPuertaCamion(int numeroCamion, bool cerrada)
+    {
+        GameObject puerta = null;
+        switch (numeroCamion)
+        {
+            case 1: puerta = puertaCerradaCamion1; break;
+            case 2: puerta = puertaCerradaCamion2; break;
+            case 3: puerta = puertaCerradaCamion3; break;
+        }
+
+        if (puerta != null && puerta.activeSelf != cerrada)
+        {
+            puerta.SetActive(cerrada);
+        }
+    }
+
+    private void AbrirTodasLasCompuertas()
+    {
+        ConfigurarPuertaCamion(1, false);
+        ConfigurarPuertaCamion(2, false);
+        ConfigurarPuertaCamion(3, false);
     }
 
     void OnDestroy()
@@ -79,6 +131,9 @@ public class ModuloDespachoTMS : MonoBehaviour
     public void ReiniciarEstadoMuelles()
     {
         StopAllCoroutines();
+        ResolverPuertasCerradas();
+        AbrirTodasLasCompuertas();
+
         LimpiarListaPalletsCamion(palletsCamion1);
         LimpiarListaPalletsCamion(palletsCamion2);
         LimpiarListaPalletsCamion(palletsCamion3);
@@ -95,7 +150,9 @@ public class ModuloDespachoTMS : MonoBehaviour
         {
             slotsReservados[i] = 0;
             renovacionEnCurso[i] = false;
+            camionSellado[i] = false;
         }
+        reinicioConvoyEnCurso = false;
         camionTurnoActual = 1;
     }
 
@@ -122,12 +179,12 @@ public class ModuloDespachoTMS : MonoBehaviour
     {
         numeroCamion = 0;
 
-        // Rotación secuencial 1 -> 2 -> 3 respetando máximo 3 pallets (físicos o reservados) por camión
+        // Rotación secuencial 1 -> 2 -> 3 respetando máximo 3 pallets (físicos o reservados) y camiones sellados
         for (int offset = 0; offset < 3; offset++)
         {
             int candidato = ((camionTurnoActual - 1 + offset) % 3) + 1;
             int ocupados = Mathf.Max(slotsReservados[candidato], ObtenerListaPallets(candidato).Count);
-            if (!renovacionEnCurso[candidato] && ocupados < CapacidadMaximaPalletsCamion)
+            if (!renovacionEnCurso[candidato] && !camionSellado[candidato] && ocupados < CapacidadMaximaPalletsCamion)
             {
                 numeroCamion = candidato;
                 break;
@@ -294,49 +351,66 @@ public class ModuloDespachoTMS : MonoBehaviour
         DashboardUI.Instance?.RegistrarLog(logMatriz);
         Debug.Log(logMatriz);
 
-        if (estibasActuales >= CapacidadMaximaPalletsCamion && !renovacionEnCurso[numeroCamion])
+        if (estibasActuales >= CapacidadMaximaPalletsCamion && !renovacionEnCurso[numeroCamion] && !camionSellado[numeroCamion])
         {
             slotsReservados[numeroCamion] = CapacidadMaximaPalletsCamion;
-            StartCoroutine(DespacharYRenovarCamion(numeroCamion, 3.5f));
+            StartCoroutine(SellarCamionYVerificarConvoy(numeroCamion, 2.5f));
         }
     }
 
-    private IEnumerator DespacharYRenovarCamion(int numeroCamion, float delay = 3.5f)
+    private IEnumerator SellarCamionYVerificarConvoy(int numeroCamion, float delay = 2.5f)
     {
         renovacionEnCurso[numeroCamion] = true;
         yield return new WaitForSeconds(delay);
 
-        // Esperar hasta que ningún AMR permanezca sobre la rampa o cama de este camión
+        // Esperar hasta que ningún AMR permanezca sobre la rampa o cama de este camión (Z > -2.0f)
         while (AlgunAMREnMuelle(numeroCamion))
         {
             yield return new WaitForSeconds(0.25f);
         }
 
+        // 1. Sellar visualmente las compuertas traseras del remolque lleno
+        ConfigurarPuertaCamion(numeroCamion, true);
+        camionSellado[numeroCamion] = true;
+
+        // 2. Destruir los 3 pallets internos tras sellar para optimizar GPU/RAM, manteniendo slotsReservados en 3
         List<GameObject> listaPallets = ObtenerListaPallets(numeroCamion);
         LimpiarListaPalletsCamion(listaPallets);
-
-        switch (numeroCamion)
-        {
-            case 2:
-                matrizLIFOCamion2.Clear();
-                pesoAcumuladoCamion2 = 0f;
-                break;
-            case 3:
-                matrizLIFOCamion3.Clear();
-                pesoAcumuladoCamion3 = 0f;
-                break;
-            default:
-                matrizLIFOCamion1.Clear();
-                pesoAcumuladoCamion1 = 0f;
-                break;
-        }
-
-        slotsReservados[numeroCamion] = 0;
+        slotsReservados[numeroCamion] = CapacidadMaximaPalletsCamion;
         renovacionEnCurso[numeroCamion] = false;
 
-        string msgRecambio = $"<color=#10B981>[TMS MÓDULO 5]:</color> Muelle_Camion_0{numeroCamion} completo (3/3 estibas LIFO). Unidad despachada a ruta; remolque vacío habilitado.";
-        DashboardUI.Instance?.RegistrarLog(msgRecambio);
-        Debug.Log(msgRecambio);
+        string msgSellado = $"<color=#10B981>[TMS MÓDULO 5]:</color> Muelle_Camion_0{numeroCamion} completo (3/3 estibas LIFO). Compuertas selladas; habilitando siguiente bahía.";
+        DashboardUI.Instance?.RegistrarLog(msgSellado);
+        Debug.Log(msgSellado);
+
+        // 3. Si los 3 camiones ya quedaron llenos y sellados, despachar el convoy completo tras 4.0s
+        if (camionSellado[1] && camionSellado[2] && camionSellado[3] && !reinicioConvoyEnCurso)
+        {
+            reinicioConvoyEnCurso = true;
+            yield return new WaitForSeconds(4.0f);
+
+            AbrirTodasLasCompuertas();
+
+            matrizLIFOCamion1.Clear();
+            matrizLIFOCamion2.Clear();
+            matrizLIFOCamion3.Clear();
+            pesoAcumuladoCamion1 = 0f;
+            pesoAcumuladoCamion2 = 0f;
+            pesoAcumuladoCamion3 = 0f;
+
+            for (int i = 1; i <= 3; i++)
+            {
+                slotsReservados[i] = 0;
+                renovacionEnCurso[i] = false;
+                camionSellado[i] = false;
+            }
+            camionTurnoActual = 1;
+            reinicioConvoyEnCurso = false;
+
+            string msgConvoy = "<color=#38BDF8>[TMS MÓDULO 5]:</color> Convoy de 3 camiones despachado a ruta. 3 nuevos remolques vacíos posicionados en Muelles 01, 02 y 03.";
+            DashboardUI.Instance?.RegistrarLog(msgConvoy);
+            Debug.Log(msgConvoy);
+        }
     }
 
     private bool AlgunAMREnMuelle(int numeroCamion)
@@ -352,7 +426,7 @@ public class ModuloDespachoTMS : MonoBehaviour
             if (amr == null || !amr.gameObject.activeInHierarchy) continue;
             if (amr.estadoActual == RobotAMR.EstadoRobot.Apagado) continue;
 
-            if (amr.transform.position.z > -1.8f && Mathf.Abs(amr.transform.position.x - xMuelle) < 4.5f)
+            if (amr.transform.position.z > -2.0f && Mathf.Abs(amr.transform.position.x - xMuelle) < 4.5f)
             {
                 return true;
             }
