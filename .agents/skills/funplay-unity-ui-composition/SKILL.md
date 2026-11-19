@@ -3,7 +3,7 @@ name: funplay-unity-ui-composition
 description: Build and revise Unity UI, primarily uGUI mobile page prefabs, with framework-aware routing, Sprite import safety, text effects, localization and visual verification.
 ---
 <!-- Funplay Unity MCP managed project skills -->
-<!-- Funplay Unity MCP skill version: unity-ui-composition@1.0.11 -->
+<!-- Funplay Unity MCP skill version: unity-ui-composition@1.0.12 -->
 
 # Unity UI Composition
 
@@ -26,6 +26,7 @@ Read only the references needed for the current task:
 - For unfamiliar or mixed UI frameworks and Editor windows: [UI framework selection](references/unity-ui-composition/ui-frameworks.md).
 - Before changing Sprite borders, pivots or slicing: [Sprite importer safety](references/unity-ui-composition/sprite-importers.md).
 - For font assets, text effects, missing glyphs or requested localization: [TMP and localization](references/unity-ui-composition/text-localization.md).
+- When a supplied design image defines a page or several states: [Design image to editable prefab](references/unity-ui-composition/image-to-prefab.md). Map independent parts, reuse assets and compare actual captures region by region.
 
 These are original Funplay adaptations informed by the pinned Unity official plugin 0.1.8-beta. They supplement, not replace, the MCP-first, prefab-preservation and design-fidelity rules here.
 
@@ -223,6 +224,6 @@ These are original Funplay adaptations informed by the pinned Unity official plu
 ## Metadata
 
 - Original skill id: `unity-ui-composition`
-- Skill version: `1.0.11`
-- Platform: `antigravity`
+- Skill version: `1.0.12`
+- Platform: `agents`
 - Source repository: `https://github.com/FunplayAI/funplay-unity-mcp`

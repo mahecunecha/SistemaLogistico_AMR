@@ -1,7 +1,7 @@
 # AGENTS.md
 
 <!-- Funplay Unity MCP managed project skills -->
-<!-- Funplay Unity MCP project skill versions: unity-mcp-workflow@1.0.10, unity-ui-composition@1.0.11 -->
+<!-- Funplay Unity MCP project skill versions: unity-mcp-workflow@1.0.10, unity-ui-composition@1.0.12 -->
 
 # Funplay Unity MCP Project Guidance
 
@@ -10,7 +10,7 @@ This section is managed by Funplay MCP for Unity. Everything between the begin a
 ## Installed project skills
 
 - `funplay-unity-mcp-workflow` v1.0.10 - Efficient workflow for using Unity MCP to edit, import, compile, inspect, and test Unity projects, including screenshot and Game View recording verification.
-- `funplay-unity-ui-composition` v1.0.11 - Build and revise Unity UI, primarily uGUI mobile page prefabs, with framework-aware routing, Sprite import safety, text effects, localization and visual verification.
+- `funplay-unity-ui-composition` v1.0.12 - Build and revise Unity UI, primarily uGUI mobile page prefabs, with framework-aware routing, Sprite import safety, text effects, localization and visual verification.
 
 ## Agent workflow rules
 

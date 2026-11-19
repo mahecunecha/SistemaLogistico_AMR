@@ -39,7 +39,7 @@ public class RobotAMR : MonoBehaviour
     private EstadoRobot ultimoEstadoTransmitido = (EstadoRobot)(-1);
 
     [Header("Sensores LiDAR")]
-    public LayerMask capaObstaculos = 1; // Default layer (bit 0) por defecto
+    public LayerMask capaObstaculos = (1 << 0) | (1 << 8); // Default (0) + ObstaculoISO (8)
     private float distanciaDeteccionAlerta = 1.65f;
     private float distanciaFrenadoEmergencia = 1.15f;
     private float distanciaMaxSensor = 4.0f;
@@ -1205,18 +1205,7 @@ public class RobotAMR : MonoBehaviour
             modeloInstanciado.transform.localRotation = Quaternion.identity;
             modeloInstanciado.transform.localScale = Vector3.one;
 
-            // 1. REGLA CRÍTICA LiDAR: Deshabilitar y destruir cualquier Collider en raíz o hijos
-            Collider[] colliders = modeloInstanciado.GetComponentsInChildren<Collider>(true);
-            for (int i = 0; i < colliders.Length; i++)
-            {
-                if (colliders[i] != null)
-                {
-                    colliders[i].enabled = false;
-                    Destroy(colliders[i]);
-                }
-            }
-
-            // 2. Corrección matemática de Pivote (Centrado X/Z = 0 y Base Inferior Y_min = 0.000m)
+            // 1. Corrección matemática de Pivote (Centrado X/Z = 0 y Base Inferior Y_min = 0.000m)
             //    + Optimización GPU para mallas densas (ej. PalletBarriles 1.37M tris -> sin ShadowCaster)
             Renderer[] renderers = modeloInstanciado.GetComponentsInChildren<Renderer>(true);
             if (renderers.Length > 0)
@@ -1239,6 +1228,29 @@ public class RobotAMR : MonoBehaviour
                 modeloInstanciado.transform.localPosition -= desfaseLocal;
             }
 
+            // 2. Garantizar Collider físico en capa "Pallet" tras normalizar el pivote (sin destruir colliders existentes)
+            if (rootPallet.GetComponentInChildren<Collider>(true) == null)
+            {
+                BoxCollider boxCol = rootPallet.AddComponent<BoxCollider>();
+                boxCol.isTrigger = false;
+                if (CalcularBoundsLocalesRenderers(rootPallet.transform, renderers, out Bounds boundsLocales))
+                {
+                    boxCol.center = boundsLocales.center;
+                    boxCol.size = boundsLocales.size;
+                }
+                else
+                {
+                    boxCol.center = new Vector3(0f, 0.75f, 0f);
+                    boxCol.size = new Vector3(1.0f, 1.5f, 1.2f);
+                }
+            }
+
+            int capaPalletPrefab = LayerMask.NameToLayer("Pallet");
+            if (capaPalletPrefab >= 0)
+            {
+                AsignarCapaRecursiva(rootPallet, capaPalletPrefab);
+            }
+
             return rootPallet;
         }
 
@@ -1249,10 +1261,6 @@ public class RobotAMR : MonoBehaviour
         baseMadera.transform.SetParent(rootPallet.transform, false);
         baseMadera.transform.localPosition = new Vector3(0f, 0.075f, 0f);
         baseMadera.transform.localScale = new Vector3(1.00f, 0.15f, 1.20f);
-
-        // REGLA CRÍTICA DE FÍSICA: Eliminar cualquier Collider para no interferir con LiDAR ni NavMesh
-        Collider colBase = baseMadera.GetComponent<Collider>();
-        if (colBase != null) Destroy(colBase);
 
         Renderer rendBase = baseMadera.GetComponent<Renderer>();
         if (rendBase != null)
@@ -1267,10 +1275,6 @@ public class RobotAMR : MonoBehaviour
         bloqueCarga.transform.SetParent(rootPallet.transform, false);
         bloqueCarga.transform.localPosition = new Vector3(0f, 0.80f, 0f);
         bloqueCarga.transform.localScale = new Vector3(0.96f, 1.45f, 1.16f);
-
-        // REGLA CRÍTICA DE FÍSICA: Eliminar Collider del bloque de carga
-        Collider colCarga = bloqueCarga.GetComponent<Collider>();
-        if (colCarga != null) Destroy(colCarga);
 
         Renderer rendCarga = bloqueCarga.GetComponent<Renderer>();
         if (rendCarga != null)
@@ -1288,7 +1292,81 @@ public class RobotAMR : MonoBehaviour
             }
         }
 
+        int capaPalletFallback = LayerMask.NameToLayer("Pallet");
+        if (capaPalletFallback >= 0)
+        {
+            AsignarCapaRecursiva(rootPallet, capaPalletFallback);
+        }
+
         return rootPallet;
+    }
+
+    private static void AsignarCapaRecursiva(GameObject objeto, int capa)
+    {
+        if (objeto == null || capa < 0) return;
+
+        Transform[] jerarquia = objeto.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < jerarquia.Length; i++)
+        {
+            jerarquia[i].gameObject.layer = capa;
+        }
+    }
+
+    private static bool CalcularBoundsLocalesRenderers(Transform raiz, Renderer[] renderers, out Bounds boundsLocales)
+    {
+        boundsLocales = default;
+        if (raiz == null || renderers == null || renderers.Length == 0) return false;
+
+        bool tieneBounds = false;
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer r = renderers[i];
+            if (r == null) continue;
+
+            if (r.TryGetComponent<MeshFilter>(out MeshFilter mf) && mf.sharedMesh != null)
+            {
+                EncapsularBoundsEnLocal(raiz, mf.transform, mf.sharedMesh.bounds, ref boundsLocales, ref tieneBounds);
+            }
+            else
+            {
+                EncapsularBoundsEnLocal(raiz, null, r.bounds, ref boundsLocales, ref tieneBounds);
+            }
+        }
+
+        return tieneBounds;
+    }
+
+    private static void EncapsularBoundsEnLocal(Transform raiz, Transform espacioOrigen, Bounds boundsOrigen, ref Bounds boundsLocales, ref bool tieneBounds)
+    {
+        Vector3 min = boundsOrigen.min;
+        Vector3 max = boundsOrigen.max;
+
+        for (int ix = 0; ix < 2; ix++)
+        {
+            float x = ix == 0 ? min.x : max.x;
+            for (int iy = 0; iy < 2; iy++)
+            {
+                float y = iy == 0 ? min.y : max.y;
+                for (int iz = 0; iz < 2; iz++)
+                {
+                    float z = iz == 0 ? min.z : max.z;
+                    Vector3 puntoMundo = espacioOrigen != null
+                        ? espacioOrigen.TransformPoint(new Vector3(x, y, z))
+                        : new Vector3(x, y, z);
+                    Vector3 puntoLocal = raiz.InverseTransformPoint(puntoMundo);
+
+                    if (!tieneBounds)
+                    {
+                        boundsLocales = new Bounds(puntoLocal, Vector3.zero);
+                        tieneBounds = true;
+                    }
+                    else
+                    {
+                        boundsLocales.Encapsulate(puntoLocal);
+                    }
+                }
+            }
+        }
     }
 
     IEnumerator ProcesoExtraccion()

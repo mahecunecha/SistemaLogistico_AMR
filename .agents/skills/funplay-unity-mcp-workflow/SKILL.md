@@ -289,5 +289,5 @@ Use `capture_game_view` for static layout or a single visual state. Use `record_
 
 - Original skill id: `unity-mcp-workflow`
 - Skill version: `1.0.10`
-- Platform: `antigravity`
+- Platform: `agents`
 - Source repository: `https://github.com/FunplayAI/funplay-unity-mcp`
