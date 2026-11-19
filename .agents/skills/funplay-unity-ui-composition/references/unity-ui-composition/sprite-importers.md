@@ -1,5 +1,5 @@
 <!-- Funplay Unity MCP managed project skills -->
-<!-- Funplay Unity MCP skill version: unity-ui-composition@1.0.11 -->
+<!-- Funplay Unity MCP skill version: unity-ui-composition@1.0.12 -->
 
 # Sprite Importer Safety
 
