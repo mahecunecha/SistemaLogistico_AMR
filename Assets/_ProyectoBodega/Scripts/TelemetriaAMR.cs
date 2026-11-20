@@ -6,6 +6,7 @@ public class TelemetriaAMR : MonoBehaviour
 {
     private RobotAMR robot;
     private NavMeshAgent agente;
+    private Canvas canvasFlotante;
 
     [Header("UI Text References")]
     public TextMeshProUGUI txtEstado;
@@ -28,6 +29,7 @@ public class TelemetriaAMR : MonoBehaviour
     {
         robot = GetComponentInParent<RobotAMR>();
         agente = GetComponentInParent<NavMeshAgent>();
+        canvasFlotante = GetComponent<Canvas>();
         AplicarAlturaInicial();
     }
 
@@ -65,6 +67,18 @@ public class TelemetriaAMR : MonoBehaviour
 
     void LateUpdate()
     {
+        if (canvasFlotante == null)
+        {
+            canvasFlotante = GetComponent<Canvas>();
+        }
+
+        bool ocultarPorModal = DashboardUI.Instance != null && DashboardUI.Instance.EsModalEmergenciaActivo();
+        if (canvasFlotante != null && canvasFlotante.enabled == ocultarPorModal)
+        {
+            canvasFlotante.enabled = !ocultarPorModal;
+        }
+        if (ocultarPorModal) return;
+
         if (Camera.main != null)
         {
             transform.rotation = Quaternion.LookRotation(transform.position - Camera.main.transform.position);
