@@ -936,6 +936,7 @@ public class RobotAMR : MonoBehaviour
             Debug.Log("<color=#10B981>[FLUJO]: 6. Pedido 3 evaluado. Emergencia de Batería (Ind. 5.0) disparada. Esperando decisión del supervisor.</color>");
             DashboardUI.Instance?.RegistrarLog($"<color=red>[ALERTA PREDICTIVA] Misión inviable. Retorno proyectado: {bateriaProyectada:F1}% (Umbral LiFePO4: {UmbralSeguridadLiFePO4:F0}%). Detención preventiva.</color>");
             DashboardUI.Instance?.MostrarEmergencia(true, bateriaProyectada, 3.2f);
+            DashboardUI.Instance?.DestellarAlertaUnidad(idRobot, false);
             estadoActual = EstadoRobot.Interrumpido;
             ActualizarJerarquiaNavegacion();
             OnEstadoCambiado?.Invoke(estadoActual);
@@ -1028,6 +1029,7 @@ public class RobotAMR : MonoBehaviour
         }
         OnEstadoCambiado?.Invoke(estadoActual);
         DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
+        DashboardUI.Instance?.DestellarAlertaUnidad(idRobot, false);
     }
 
     public void ReanudarTrasRelevoDiferido()
@@ -1092,6 +1094,8 @@ public class RobotAMR : MonoBehaviour
         estadoActual = EstadoRobot.Apagado;
         OnEstadoCambiado?.Invoke(estadoActual);
         DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
+        GestorAudioSCADA.Instance?.ReproducirAlarmaCritica();
+        DashboardUI.Instance?.DestellarAlertaUnidad(idRobot, true);
 
         return pedidoHuerfano;
     }
@@ -1869,6 +1873,8 @@ public class RobotAMR : MonoBehaviour
         estadoActual = EstadoRobot.Interrumpido;
         ActualizarJerarquiaNavegacion();
         OnEstadoCambiado?.Invoke(estadoActual);
+        GestorAudioSCADA.Instance?.ReproducirAlarmaCritica();
+        DashboardUI.Instance?.DestellarAlertaUnidad(idRobot, true);
         return true;
     }
 
@@ -2165,6 +2171,8 @@ public class RobotAMR : MonoBehaviour
             OnEstadoCambiado?.Invoke(estadoActual);
             DashboardUI.Instance?.RegistrarLog("<color=red><b>[FALLO CATASTRÓFICO]:</b> Celda agotada al 0% en pasillo. Unidad inmovilizada.</color>");
             Debug.LogError("[FALLO CATASTRÓFICO] Batería agotada al 0% en pasillo. NavMeshAgent inmovilizado.");
+            GestorAudioSCADA.Instance?.ReproducirAlarmaCritica();
+            DashboardUI.Instance?.DestellarAlertaUnidad(idRobot, true);
             return true;
         }
         return false;

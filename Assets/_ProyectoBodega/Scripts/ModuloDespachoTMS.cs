@@ -447,6 +447,7 @@ public class ModuloDespachoTMS : MonoBehaviour
         string logMatriz = $"<color=cyan>[MATRIZ LIFO CAMIÓN {numeroCamion}]:</color> Estiba {pedido.id_pallet} apilada en Posición #{estibasActuales}/{CapacidadMaximaPalletsCamion} (Peso acumulado: {pesoAcumulado:F0} kg / {CapacidadMaximaCamionKg:F0} kg)";
         DashboardUI.Instance?.RegistrarLog(logMatriz);
         Debug.Log(logMatriz);
+        GestorAudioSCADA.Instance?.ReproducirConfirmacionEntrega();
 
         if (estibasActuales >= CapacidadMaximaPalletsCamion && !renovacionEnCurso[numeroCamion] && !camionSellado[numeroCamion])
         {
