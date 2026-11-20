@@ -76,6 +76,39 @@ public class RobotManagerEVE : MonoBehaviour
     private bool despachandoDespejeISO = false;
 
     public enum EscenarioHorizonte { EscenarioA_InicioTurno, EscenarioB_Madrugada, EscenarioC_FinalTurno }
+    public enum DecisionAdmisionSLA { Invalido, Aprobado1AMR, EscaladoDual2AMRs, Rechazado }
+
+    public struct ResultadoEvaluacionSLA
+    {
+        public DecisionAdmisionSLA Decision;
+        public int NuevosPallets;
+        public int ProyeccionCola;
+        public float HorasRestantes;
+        public float Capacidad1AMR;
+        public float Capacidad2AMRs;
+        public int AMRRequeridos;
+        public float ETAHoras;
+        public string FeedbackTecnico;
+    }
+
+    public struct ResultadoHorizonteO1
+    {
+        public EscenarioHorizonte Escenario;
+        public float HoraTurnoActual;
+        public float HorasRestantes;
+        public int NuevosPedidos;
+        public float EnergiaRequeridaSoC;
+        public float EnergiaDisponibleSoC;
+        public float DeficitSoC;
+        public float PesoLoteKg;
+        public int PedidosAbsorbibles;
+        public int PedidosRezagados;
+        public float PorcentajeCarryOver;
+        public int AMRRequeridos;
+        public string EtiquetaEscenario;
+    }
+
+    public ResultadoEvaluacionSLA UltimaEvaluacionSLA { get; private set; }
 
     [Header("Simulador de Estrés de Flota (Industria 5.0 - O(1))")]
     public float horaTurnoActual = 1.0f;
@@ -1142,6 +1175,39 @@ public class RobotManagerEVE : MonoBehaviour
         return null;
     }
 
+    public static bool CumpleReglasGeometricasSpawnISO(
+        Vector3 posAMR,
+        Vector3 dirFrente,
+        Vector3 posBaseCarga,
+        out Vector3 posCandidata)
+    {
+        Vector3 dirNorm = dirFrente.sqrMagnitude > 0.001f ? dirFrente.normalized : Vector3.forward;
+        posCandidata = posAMR + dirNorm * 3.10f;
+
+        // Regla 1: Rechazar zona de rampas, muelles y tráilers (y sala de carga trasera)
+        if (posCandidata.z > -3.50f || posAMR.z > -3.50f || posCandidata.z < RobotAMR.ZUmbralPortico)
+        {
+            return false;
+        }
+
+        // Regla 2: Rechazar proximidad a ASRS_Estante_Heroe y Base_Carga_Principal
+        if (posCandidata.x < -16.8f)
+        {
+            return false;
+        }
+
+        float distHorizontalBase = Vector2.Distance(
+            new Vector2(posCandidata.x, posCandidata.z),
+            new Vector2(posBaseCarga.x, posBaseCarga.z)
+        );
+        if (distHorizontalBase < 1.80f)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     private bool EsPosicionSpawnObstaculoValida(RobotAMR amr, out Vector3 posValida, out Vector3 dirFrente)
     {
         posValida = Vector3.zero;
@@ -1154,27 +1220,10 @@ public class RobotManagerEVE : MonoBehaviour
         }
 
         dirFrente = amr.transform.forward.sqrMagnitude > 0.001f ? amr.transform.forward.normalized : Vector3.forward;
-        Vector3 posCandidata = amr.transform.position + dirFrente * 3.10f;
-
-        // Regla 1: Rechazar zona de rampas, muelles y tráilers (y sala de carga trasera)
-        if (posCandidata.z > -3.50f || amr.transform.position.z > -3.50f || posCandidata.z < RobotAMR.ZUmbralPortico)
-        {
-            return false;
-        }
-
-        // Regla 2: Rechazar proximidad a ASRS_Estante_Heroe y Base_Carga_Principal
-        if (posCandidata.x < -16.8f)
-        {
-            return false;
-        }
-
         GameObject baseCargaObj = GameObject.Find("Base_Carga_Principal");
         Vector3 posBaseCarga = baseCargaObj != null ? baseCargaObj.transform.position : new Vector3(-19.50f, 0f, -0.42f);
-        float distHorizontalBase = Vector2.Distance(
-            new Vector2(posCandidata.x, posCandidata.z),
-            new Vector2(posBaseCarga.x, posBaseCarga.z)
-        );
-        if (distHorizontalBase < 1.80f)
+
+        if (!CumpleReglasGeometricasSpawnISO(amr.transform.position, dirFrente, posBaseCarga, out Vector3 posCandidata))
         {
             return false;
         }
@@ -1221,21 +1270,18 @@ public class RobotManagerEVE : MonoBehaviour
         StartCoroutine(ProtocoloDespejeAutonomoISO(robotAfectado, obstaculoDetectado));
     }
 
-    public void ProyectarEstresDeFlota(int nuevosPedidos = 50)
+    public static ResultadoHorizonteO1 CalcularProyeccionHorizonte(
+        int nuevosPedidos,
+        float bateriaAMR01,
+        float bateriaAMR02,
+        float horaTurnoActual)
     {
-        if (!turnoIniciado) return;
-        if (alertaDemandaEnCurso) return;
-        alertaDemandaEnCurso = true;
-
         const float deltaSoCPedido = 3.85f;
         const float pisoSeguridadLiFePO4 = RobotAMR.UmbralSeguridadLiFePO4; // 20.0f
         const float ventanaNominalUnidad = 60.0f; // 80.0% -> 20.0%
         const float pesoEstibaEstandarKg = 850.0f;
 
         float energiaRequerida = nuevosPedidos * deltaSoCPedido; // 192.5% para 50 pedidos
-
-        float bateriaAMR01 = robotAMR_01 != null ? robotAMR_01.bateriaActual : 80.0f;
-        float bateriaAMR02 = robotAMR_02 != null ? robotAMR_02.bateriaActual : 80.0f;
         float energiaDisponible = Mathf.Max(0f, bateriaAMR01 - pisoSeguridadLiFePO4) +
                                   Mathf.Max(0f, bateriaAMR02 - pisoSeguridadLiFePO4);
 
@@ -1251,7 +1297,7 @@ public class RobotManagerEVE : MonoBehaviour
         float horasRestantes = Mathf.Max(0.5f, duracionTurnoHoras - horaTurnoActual);
         int pedidosAbsorbibles = Mathf.Clamp(Mathf.FloorToInt(horasRestantes * tasaAbsorcionFlotaActual), 0, nuevosPedidos);
         int pedidosRezagados = Mathf.Max(0, nuevosPedidos - pedidosAbsorbibles);
-        float porcentajeCarryOver = (pedidosRezagados / (float)nuevosPedidos) * 100f;
+        float porcentajeCarryOver = nuevosPedidos > 0 ? (pedidosRezagados / (float)nuevosPedidos) * 100f : 0f;
 
         EscenarioHorizonte escenario;
         int amrRequeridos;
@@ -1277,13 +1323,42 @@ public class RobotManagerEVE : MonoBehaviour
             etiquetaEscenario = "ESCENARIO C (FINAL TURNO)";
         }
 
-        Debug.Log($"<color=#F59E0B>[ANALIZADOR HORIZONTE O(1) - {etiquetaEscenario}]:</color> Hora {horaTurnoActual:F1}/8 (Restan {horasRestantes:F1}h). Lote: {nuevosPedidos} ped ({pesoLoteKg:F0} kg). Déficit LiFePO4: -{deficitSoC:F1}% SoC | Carry-over SLA: {porcentajeCarryOver:F0}% | Recomendación: {amrRequeridos} AMRs.");
-        DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B><b>[WMS HORIZONTE - {etiquetaEscenario}]:</b></color> Ráfaga de {nuevosPedidos} pedidos ({pesoLoteKg:F0} kg) en Hora {horaTurnoActual:F1}/8 (Restan {horasRestantes:F1}h).");
-        DashboardUI.Instance?.RegistrarLog($"<color=#EF4444><b>[DICTAMEN O(1)]:</b></color> Déficit LiFePO4: -{deficitSoC:F1}% SoC | Rezago SLA (Carry-over): {porcentajeCarryOver:F0}%. Flota recomendada: {amrRequeridos} AMRs.");
+        return new ResultadoHorizonteO1
+        {
+            Escenario = escenario,
+            HoraTurnoActual = horaTurnoActual,
+            HorasRestantes = horasRestantes,
+            NuevosPedidos = nuevosPedidos,
+            EnergiaRequeridaSoC = energiaRequerida,
+            EnergiaDisponibleSoC = energiaDisponible,
+            DeficitSoC = deficitSoC,
+            PesoLoteKg = pesoLoteKg,
+            PedidosAbsorbibles = pedidosAbsorbibles,
+            PedidosRezagados = pedidosRezagados,
+            PorcentajeCarryOver = porcentajeCarryOver,
+            AMRRequeridos = amrRequeridos,
+            EtiquetaEscenario = etiquetaEscenario
+        };
+    }
+
+    public void ProyectarEstresDeFlota(int nuevosPedidos = 50)
+    {
+        if (!turnoIniciado) return;
+        if (alertaDemandaEnCurso) return;
+        alertaDemandaEnCurso = true;
+
+        float bateriaAMR01 = robotAMR_01 != null ? robotAMR_01.bateriaActual : 80.0f;
+        float bateriaAMR02 = robotAMR_02 != null ? robotAMR_02.bateriaActual : 80.0f;
+
+        ResultadoHorizonteO1 r = CalcularProyeccionHorizonte(nuevosPedidos, bateriaAMR01, bateriaAMR02, horaTurnoActual);
+
+        Debug.Log($"<color=#F59E0B>[ANALIZADOR HORIZONTE O(1) - {r.EtiquetaEscenario}]:</color> Hora {r.HoraTurnoActual:F1}/8 (Restan {r.HorasRestantes:F1}h). Lote: {r.NuevosPedidos} ped ({r.PesoLoteKg:F0} kg). Déficit LiFePO4: -{r.DeficitSoC:F1}% SoC | Carry-over SLA: {r.PorcentajeCarryOver:F0}% | Recomendación: {r.AMRRequeridos} AMRs.");
+        DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B><b>[WMS HORIZONTE - {r.EtiquetaEscenario}]:</b></color> Ráfaga de {r.NuevosPedidos} pedidos ({r.PesoLoteKg:F0} kg) en Hora {r.HoraTurnoActual:F1}/8 (Restan {r.HorasRestantes:F1}h).");
+        DashboardUI.Instance?.RegistrarLog($"<color=#EF4444><b>[DICTAMEN O(1)]:</b></color> Déficit LiFePO4: -{r.DeficitSoC:F1}% SoC | Rezago SLA (Carry-over): {r.PorcentajeCarryOver:F0}%. Flota recomendada: {r.AMRRequeridos} AMRs.");
 
         DashboardUI.Instance?.MostrarAlertaIncertidumbreDemanda(
-            escenario, horaTurnoActual, horasRestantes, nuevosPedidos,
-            deficitSoC, amrRequeridos, porcentajeCarryOver, pesoLoteKg
+            r.Escenario, r.HoraTurnoActual, r.HorasRestantes, r.NuevosPedidos,
+            r.DeficitSoC, r.AMRRequeridos, r.PorcentajeCarryOver, r.PesoLoteKg
         );
     }
 
@@ -1382,41 +1457,41 @@ public class RobotManagerEVE : MonoBehaviour
     }
 #endif
 
-    public void ProcesarArchivoManifiesto(string rutaArchivo)
+    public static bool TryParsearYValidarManifiesto(
+        string json,
+        List<Pedido> pedidosFallback,
+        out Manifiesto loteValido,
+        out string motivoError)
     {
+        loteValido = null;
+        motivoError = null;
+
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            motivoError = "Esquema inválido";
+            return false;
+        }
+
         try
         {
-            if (string.IsNullOrEmpty(rutaArchivo) || !File.Exists(rutaArchivo))
-            {
-                DashboardUI.Instance?.MostrarPopUpRechazo("Esquema inválido");
-                return;
-            }
-
-            string json = File.ReadAllText(rutaArchivo);
-            if (string.IsNullOrWhiteSpace(json))
-            {
-                DashboardUI.Instance?.MostrarPopUpRechazo("Esquema inválido");
-                return;
-            }
-
             Manifiesto lote = JsonUtility.FromJson<Manifiesto>(json);
             bool sinPedidos = lote == null || lote.pedidos == null || lote.pedidos.Count == 0;
             if (lote == null || (sinPedidos && lote.total_pallets <= 0))
             {
-                DashboardUI.Instance?.MostrarPopUpRechazo("Esquema inválido");
-                return;
+                motivoError = "Esquema inválido";
+                return false;
             }
 
             if (sinPedidos)
             {
-                if (manifiestoActual != null && manifiestoActual.pedidos != null && manifiestoActual.pedidos.Count > 0)
+                if (pedidosFallback != null && pedidosFallback.Count > 0)
                 {
-                    lote.pedidos = new List<Pedido>(manifiestoActual.pedidos);
+                    lote.pedidos = new List<Pedido>(pedidosFallback);
                 }
                 else
                 {
-                    DashboardUI.Instance?.MostrarPopUpRechazo("Esquema inválido");
-                    return;
+                    motivoError = "Esquema inválido";
+                    return false;
                 }
             }
             else
@@ -1432,9 +1507,41 @@ public class RobotManagerEVE : MonoBehaviour
                 }
                 if (!tieneCampoValido && lote.total_pallets <= 0)
                 {
-                    DashboardUI.Instance?.MostrarPopUpRechazo("Esquema inválido");
-                    return;
+                    motivoError = "Esquema inválido";
+                    return false;
                 }
+            }
+
+            loteValido = lote;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            motivoError = ex.Message;
+            return false;
+        }
+    }
+
+    public void ProcesarArchivoManifiesto(string rutaArchivo)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(rutaArchivo) || !File.Exists(rutaArchivo))
+            {
+                DashboardUI.Instance?.MostrarPopUpRechazo("Esquema inválido");
+                return;
+            }
+
+            string json = File.ReadAllText(rutaArchivo);
+            List<Pedido> fallback = (manifiestoActual != null) ? manifiestoActual.pedidos : null;
+            if (!TryParsearYValidarManifiesto(json, fallback, out Manifiesto lote, out string motivoError))
+            {
+                if (!string.IsNullOrEmpty(motivoError) && motivoError != "Esquema inválido")
+                {
+                    Debug.LogWarning($"[EVE Ingesta JSON]: Error procesando '{rutaArchivo}': {motivoError}");
+                }
+                DashboardUI.Instance?.MostrarPopUpRechazo("Esquema inválido");
+                return;
             }
 
             EvaluarIngestaAutonoma(lote);
@@ -1446,9 +1553,95 @@ public class RobotManagerEVE : MonoBehaviour
         }
     }
 
+    public static ResultadoEvaluacionSLA CalcularEvaluacionSLA(
+        int palletsEnColaActual,
+        int nuevosPallets,
+        float horaTurnoActual,
+        bool flotaEscaladaDualActual = false)
+    {
+        float horasRestantesRaw = Mathf.Max(0.5f, 8.0f - horaTurnoActual);
+        float horasRestantes = Mathf.Clamp(horasRestantesRaw, 4.5f, 5.0f);
+
+        float capacidad1AMR = 40f * horasRestantes;
+        float capacidad2AMRs = 80f * horasRestantes;
+
+        if (nuevosPallets <= 0)
+        {
+            return new ResultadoEvaluacionSLA
+            {
+                Decision = DecisionAdmisionSLA.Invalido,
+                NuevosPallets = nuevosPallets,
+                ProyeccionCola = palletsEnColaActual,
+                HorasRestantes = horasRestantes,
+                Capacidad1AMR = capacidad1AMR,
+                Capacidad2AMRs = capacidad2AMRs,
+                AMRRequeridos = 0,
+                ETAHoras = 0f,
+                FeedbackTecnico = string.Empty
+            };
+        }
+
+        int proyeccionCola = palletsEnColaActual + nuevosPallets;
+
+        if (proyeccionCola <= capacidad1AMR)
+        {
+            float tasaActual = flotaEscaladaDualActual ? 80f : 40f;
+            return new ResultadoEvaluacionSLA
+            {
+                Decision = DecisionAdmisionSLA.Aprobado1AMR,
+                NuevosPallets = nuevosPallets,
+                ProyeccionCola = proyeccionCola,
+                HorasRestantes = horasRestantes,
+                Capacidad1AMR = capacidad1AMR,
+                Capacidad2AMRs = capacidad2AMRs,
+                AMRRequeridos = flotaEscaladaDualActual ? 2 : 1,
+                ETAHoras = proyeccionCola / tasaActual,
+                FeedbackTecnico = string.Empty
+            };
+        }
+        else if (proyeccionCola <= capacidad2AMRs)
+        {
+            return new ResultadoEvaluacionSLA
+            {
+                Decision = DecisionAdmisionSLA.EscaladoDual2AMRs,
+                NuevosPallets = nuevosPallets,
+                ProyeccionCola = proyeccionCola,
+                HorasRestantes = horasRestantes,
+                Capacidad1AMR = capacidad1AMR,
+                Capacidad2AMRs = capacidad2AMRs,
+                AMRRequeridos = 2,
+                ETAHoras = proyeccionCola / 80f,
+                FeedbackTecnico = string.Empty
+            };
+        }
+        else
+        {
+            int amrRequeridos = Mathf.CeilToInt(proyeccionCola / capacidad1AMR);
+            string feedback = $"[REPORTE SLA] Lote rechazado (+{nuevosPallets} pal | Proyección: {proyeccionCola} pal).\n" +
+                              $"Techo actual (2 AMRs @ 80 pal/h en {horasRestantes:F1}h): {capacidad2AMRs:F0} pallets.\n" +
+                              $"Flota requerida: {amrRequeridos} AMRs en piso + 1 AMR soporte ({amrRequeridos + 1} totales).";
+            return new ResultadoEvaluacionSLA
+            {
+                Decision = DecisionAdmisionSLA.Rechazado,
+                NuevosPallets = nuevosPallets,
+                ProyeccionCola = proyeccionCola,
+                HorasRestantes = horasRestantes,
+                Capacidad1AMR = capacidad1AMR,
+                Capacidad2AMRs = capacidad2AMRs,
+                AMRRequeridos = amrRequeridos,
+                ETAHoras = 0f,
+                FeedbackTecnico = feedback
+            };
+        }
+    }
+
     public void EvaluarIngestaAutonoma(Manifiesto nuevoLote)
     {
-        if (nuevoLote == null) return;
+        if (nuevoLote == null)
+        {
+            UltimaEvaluacionSLA = default;
+            return;
+        }
 
         if ((plantillaPedidosFisicos == null || plantillaPedidosFisicos.Count == 0) &&
             nuevoLote.pedidos != null && nuevoLote.pedidos.Count > 0)
@@ -1460,17 +1653,14 @@ public class RobotManagerEVE : MonoBehaviour
             ? nuevoLote.total_pallets
             : (nuevoLote.pedidos != null ? nuevoLote.pedidos.Count : 0);
 
-        int proyeccionCola = palletsEnColaWMS + nuevosPallets;
+        ResultadoEvaluacionSLA eval = CalcularEvaluacionSLA(palletsEnColaWMS, nuevosPallets, horaTurnoActual, flotaEscaladaDual);
+        UltimaEvaluacionSLA = eval;
 
-        float horasRestantesRaw = Mathf.Max(0.5f, 8.0f - horaTurnoActual);
-        float horasRestantes = Mathf.Clamp(horasRestantesRaw, 4.5f, 5.0f);
+        if (eval.Decision == DecisionAdmisionSLA.Invalido) return;
 
-        float capacidad1AMR = 40f * horasRestantes;
-        float capacidad2AMRs = 80f * horasRestantes;
-
-        if (proyeccionCola <= capacidad1AMR)
+        if (eval.Decision == DecisionAdmisionSLA.Aprobado1AMR)
         {
-            palletsEnColaWMS = proyeccionCola;
+            palletsEnColaWMS = eval.ProyeccionCola;
             manifiestoActual = new Manifiesto
             {
                 id_lote = nuevoLote.id_lote,
@@ -1497,18 +1687,16 @@ public class RobotManagerEVE : MonoBehaviour
                 }
             }
 
-            float tasaActual = flotaEscaladaDual ? 80f : 40f;
-            float eta = proyeccionCola / tasaActual;
             DashboardUI.Instance?.MostrarPopUpEjecutivoSLA(
                 "<color=#10B981>APROBADO (1 AMR)</color>",
-                $"Lote: +{nuevosPallets} | Cola Total: {proyeccionCola} pallets (SLA: 40 pal/h)\nPiso: AMR-01 | Soporte: AMR-02 (Reserva 80%) | ETA: {eta:F2} h",
+                $"Lote: +{nuevosPallets} | Cola Total: {eval.ProyeccionCola} pallets (SLA: 40 pal/h)\nPiso: AMR-01 | Soporte: AMR-02 (Reserva 80%) | ETA: {eval.ETAHoras:F2} h",
                 4.5f
             );
-            DashboardUI.Instance?.RegistrarLog($"<color=#10B981>[SLA ADMISIÓN]:</color> Aprobado +{nuevosPallets} pallets (Cola WMS: {proyeccionCola}). Operación 1 AMR (ETA: {eta:F2}h).");
+            DashboardUI.Instance?.RegistrarLog($"<color=#10B981>[SLA ADMISIÓN]:</color> Aprobado +{nuevosPallets} pallets (Cola WMS: {eval.ProyeccionCola}). Operación 1 AMR (ETA: {eval.ETAHoras:F2}h).");
         }
-        else if (proyeccionCola <= capacidad2AMRs)
+        else if (eval.Decision == DecisionAdmisionSLA.EscaladoDual2AMRs)
         {
-            palletsEnColaWMS = proyeccionCola;
+            palletsEnColaWMS = eval.ProyeccionCola;
             flotaEscaladaDual = true;
             manifiestoActual = new Manifiesto
             {
@@ -1533,28 +1721,21 @@ public class RobotManagerEVE : MonoBehaviour
                 }
             }
 
-            float eta = proyeccionCola / 80f;
             DashboardUI.Instance?.MostrarPopUpEjecutivoSLA(
                 "<color=#38BDF8>ESCALADO DUAL (2 AMRs + AMR-03)</color>",
-                $"Cola Total: {proyeccionCola} pallets | SLA Dual: 80 pal/h\nPiso: AMR-01 + AMR-02 activos | Soporte: AMR-03 | ETA: {eta:F2} h",
+                $"Cola Total: {eval.ProyeccionCola} pallets | SLA Dual: 80 pal/h\nPiso: AMR-01 + AMR-02 activos | Soporte: AMR-03 | ETA: {eval.ETAHoras:F2} h",
                 4.5f
             );
-            DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[SLA ESCALAMIENTO]:</color> Despacho dual activado (AMR-01 + AMR-02 en piso, AMR-03 soporte). Cola WMS: {proyeccionCola} pallets (ETA: {eta:F2}h).");
+            DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[SLA ESCALAMIENTO]:</color> Despacho dual activado (AMR-01 + AMR-02 en piso, AMR-03 soporte). Cola WMS: {eval.ProyeccionCola} pallets (ETA: {eval.ETAHoras:F2}h).");
         }
         else
         {
-            int amrRequeridos = Mathf.CeilToInt(proyeccionCola / capacidad1AMR);
-
             DashboardUI.Instance?.RegistrarLog("Pedido rechazado, feedback adjuntado.");
-
-            string feedback = $"[REPORTE SLA] Lote rechazado (+{nuevosPallets} pal | Proyección: {proyeccionCola} pal).\n" +
-                              $"Techo actual (2 AMRs @ 80 pal/h en {horasRestantes:F1}h): {capacidad2AMRs:F0} pallets.\n" +
-                              $"Flota requerida: {amrRequeridos} AMRs en piso + 1 AMR soporte ({amrRequeridos + 1} totales).";
-            DashboardUI.Instance?.RegistrarFeedbackSupervisor(feedback);
+            DashboardUI.Instance?.RegistrarFeedbackSupervisor(eval.FeedbackTecnico);
 
             DashboardUI.Instance?.MostrarPopUpEjecutivoSLA(
                 "<color=#EF4444>RECHAZADO</color>",
-                $"Proyección ({proyeccionCola} pallets) excede techo SLA (2 AMRs).\nFlota requerida: {amrRequeridos} AMRs en piso. Feedback en Buzón.",
+                $"Proyección ({eval.ProyeccionCola} pallets) excede techo SLA (2 AMRs).\nFlota requerida: {eval.AMRRequeridos} AMRs en piso. Feedback en Buzón.",
                 4.5f
             );
         }
