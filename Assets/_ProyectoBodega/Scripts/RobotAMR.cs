@@ -47,6 +47,9 @@ public class RobotAMR : MonoBehaviour
     private bool enParadaSeguridadLiDAR = false;
     private EstadoRobot estadoPrevioBloqueo = EstadoRobot.Inactivo;
 
+    public bool EnParadaSeguridadLiDAR => enParadaSeguridadLiDAR;
+    public EstadoRobot EstadoPrevioBloqueo => estadoPrevioBloqueo;
+
     private float velocidadBase = 3.5f;
     private float aceleracionBase = 20.0f;
     private float coeficientePeso = 0.002f;
@@ -148,7 +151,8 @@ public class RobotAMR : MonoBehaviour
     {
         if (palletActualGO != null)
         {
-            Destroy(palletActualGO);
+            if (Application.isPlaying) Destroy(palletActualGO);
+            else DestroyImmediate(palletActualGO);
             palletActualGO = null;
         }
         if (stockOcultadoActual != null)
@@ -721,13 +725,19 @@ public class RobotAMR : MonoBehaviour
         {
             Vector3 primerWaypoint = colaWaypoints.Dequeue();
             agente.autoBraking = (colaWaypoints.Count == 0);
-            agente.SetDestination(primerWaypoint);
+            if (agente.enabled && agente.isOnNavMesh)
+            {
+                agente.SetDestination(primerWaypoint);
+            }
         }
         else
         {
             ResolverEjeCarrilX(destinoFinal, out Vector3 destinoNav, rackDestino);
             agente.autoBraking = true;
-            agente.SetDestination(destinoNav);
+            if (agente.enabled && agente.isOnNavMesh)
+            {
+                agente.SetDestination(destinoNav);
+            }
         }
     }
 
@@ -815,6 +825,40 @@ public class RobotAMR : MonoBehaviour
         slotLIFOAsignado = 0;
     }
 
+    public static float CalcularConsumoTramo(
+        float distanciaMetros,
+        float pesoKg,
+        float coefVacio,
+        float coefCarga,
+        bool cargado,
+        float factorRuidoTermico = 1.15f)
+    {
+        if (distanciaMetros <= 0f) return 0f;
+        if (!cargado)
+        {
+            return distanciaMetros * coefVacio;
+        }
+        return distanciaMetros * coefCarga * (pesoKg / 100f) * factorRuidoTermico;
+    }
+
+    public static bool EvaluarViabilidadLiFePO4(
+        float bateriaActual,
+        float distanciaIda,
+        float distanciaVuelta,
+        float pesoKg,
+        float coefVacio,
+        float coefCarga,
+        out float bateriaRestanteEstimada)
+    {
+        // Proyección del consumo: ida vacío + vuelta cargado con ruido térmico máximo (1.15f)
+        float gastoIda = CalcularConsumoTramo(distanciaIda, pesoKg, coefVacio, coefCarga, false, 1.0f);
+        float gastoVuelta = CalcularConsumoTramo(distanciaVuelta, pesoKg, coefVacio, coefCarga, true, 1.15f);
+        float gastoProyectadoTotal = gastoIda + gastoVuelta;
+
+        bateriaRestanteEstimada = bateriaActual - gastoProyectadoTotal;
+        return bateriaRestanteEstimada >= UmbralSeguridadLiFePO4;
+    }
+
     private bool CalcularViabilidadOperativa(Pedido pedido, Transform destino, out float bateriaRestanteEstimada)
     {
         // Si la zona de transferencia o el slot LIFO no han sido resueltos aún, consultar al TMS
@@ -832,14 +876,15 @@ public class RobotAMR : MonoBehaviour
             distanciaVuelta = CalcularDistanciaNavMesh(destino.position, destinoSlotCamion, destino, null);
         }
 
-        // Proyección del consumo: ida vacío + vuelta cargado con ruido térmico máximo (1.15f)
-        float gastoIda = distanciaIda * coeficienteVacio;
-        float gastoVuelta = distanciaVuelta * coeficienteCarga * (pedido.peso_kg / 100f) * 1.15f;
-        float gastoProyectadoTotal = gastoIda + gastoVuelta;
-
-        bateriaRestanteEstimada = bateriaActual - gastoProyectadoTotal;
-
-        return bateriaRestanteEstimada >= UmbralSeguridadLiFePO4;
+        float pesoKg = pedido != null ? pedido.peso_kg : 0f;
+        return EvaluarViabilidadLiFePO4(
+            bateriaActual,
+            distanciaIda,
+            distanciaVuelta,
+            pesoKg,
+            coeficienteVacio,
+            coeficienteCarga,
+            out bateriaRestanteEstimada);
     }
 
     public void AsignarMision(Pedido nuevoPedido)
@@ -894,7 +939,7 @@ public class RobotAMR : MonoBehaviour
             estadoActual = EstadoRobot.Interrumpido;
             ActualizarJerarquiaNavegacion();
             OnEstadoCambiado?.Invoke(estadoActual);
-            if (agente != null) agente.isStopped = true;
+            if (agente != null && agente.enabled && agente.isOnNavMesh) agente.isStopped = true;
             return;
         }
 
@@ -905,10 +950,13 @@ public class RobotAMR : MonoBehaviour
         ActualizarJerarquiaNavegacion();
         OnEstadoCambiado?.Invoke(estadoActual);
 
-        agente.radius = RadioAgenteIndustrial;
-        agente.angularSpeed = VelocidadAngularIndustrial;
-        agente.speed = velocidadBase;
-        agente.acceleration = aceleracionBase;
+        if (agente != null)
+        {
+            agente.radius = RadioAgenteIndustrial;
+            agente.angularSpeed = VelocidadAngularIndustrial;
+            agente.speed = velocidadBase;
+            agente.acceleration = aceleracionBase;
+        }
 
         TrazarRutaOrtogonal(destinoActual.position); // Da la orden de moverse por rieles VDA 5050
         Debug.Log("<color=cyan>AMR Desplegado:</color> Viajando a " + destinoFisico.name + " para buscar " + pedidoActual.codigo_sku);
@@ -943,8 +991,11 @@ public class RobotAMR : MonoBehaviour
             if (!agente.enabled) agente.enabled = true;
             ActualizarJerarquiaNavegacion();
             agente.updateRotation = true;
-            agente.isStopped = false;
-            agente.ResetPath();
+            if (agente.isOnNavMesh)
+            {
+                agente.isStopped = false;
+                agente.ResetPath();
+            }
             agente.radius = RadioAgenteIndustrial;
             agente.angularSpeed = VelocidadAngularIndustrial;
             agente.speed = velocidadBase;
@@ -1009,7 +1060,8 @@ public class RobotAMR : MonoBehaviour
         LimpiarPalletTemporal();
         if (palletActualGO != null)
         {
-            Destroy(palletActualGO);
+            if (Application.isPlaying) Destroy(palletActualGO);
+            else DestroyImmediate(palletActualGO);
             palletActualGO = null;
         }
         LiberarMutexDeRobot(this);
@@ -1148,9 +1200,12 @@ public class RobotAMR : MonoBehaviour
         {
             agente.updateRotation = true;
             agente.autoBraking = true;
-            agente.isStopped = true;
-            agente.ResetPath();
-            agente.velocity = Vector3.zero;
+            if (agente.enabled && agente.isOnNavMesh)
+            {
+                agente.isStopped = true;
+                agente.ResetPath();
+                agente.velocity = Vector3.zero;
+            }
         }
 
         estadoActual = EstadoRobot.Inactivo;
@@ -1172,7 +1227,7 @@ public class RobotAMR : MonoBehaviour
         estadoActual = estadoPrevioBloqueo;
         ActualizarJerarquiaNavegacion();
 
-        if (agente != null)
+        if (agente != null && agente.enabled && agente.isOnNavMesh)
         {
             agente.isStopped = enEsperaMutex;
         }
@@ -1793,6 +1848,30 @@ public class RobotAMR : MonoBehaviour
         return hitTransform == raizISO || hitTransform.IsChildOf(raizISO);
     }
 
+    public bool ActivarParadaSeguridadLiDAR()
+    {
+        bool amrEnMovimiento = estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando;
+        if (enParadaSeguridadLiDAR || !amrEnMovimiento)
+        {
+            return false;
+        }
+
+        enParadaSeguridadLiDAR = true;
+        estadoPrevioBloqueo = estadoActual;
+        obstaculoDetectado = true;
+
+        if (agente != null && agente.enabled && agente.isOnNavMesh)
+        {
+            agente.isStopped = true;
+            agente.velocity = Vector3.zero;
+        }
+
+        estadoActual = EstadoRobot.Interrumpido;
+        ActualizarJerarquiaNavegacion();
+        OnEstadoCambiado?.Invoke(estadoActual);
+        return true;
+    }
+
     private void ProcesarSensoresLiDAR()
     {
         if (enParadaSeguridadLiDAR) return;
@@ -1839,24 +1918,14 @@ public class RobotAMR : MonoBehaviour
                 bool amrEnMovimiento = estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando;
                 if (hit.distance <= distanciaFrenadoEmergencia && !enParadaSeguridadLiDAR && amrEnMovimiento && EsObstaculoISORegistrado(hit.transform))
                 {
-                    Debug.Log("<color=#10B981>[FLUJO]: 4. Emergencia LiDAR (Ind. 4.0) disparada correctamente.</color>");
-                    enParadaSeguridadLiDAR = true;
-                    estadoPrevioBloqueo = estadoActual;
-                    obstaculoDetectado = true;
-                    Debug.DrawLine(origen, hit.point, Color.red);
-
-                    if (agente != null)
+                    if (ActivarParadaSeguridadLiDAR())
                     {
-                        agente.isStopped = true;
-                        agente.velocity = Vector3.zero;
+                        Debug.Log("<color=#10B981>[FLUJO]: 4. Emergencia LiDAR (Ind. 4.0) disparada correctamente.</color>");
+                        Debug.DrawLine(origen, hit.point, Color.red);
+
+                        if (managerEVE == null) managerEVE = FindFirstObjectByType<RobotManagerEVE>();
+                        managerEVE?.GestionarObstruccionAutonomaISO(this, hit.collider.gameObject);
                     }
-
-                    estadoActual = EstadoRobot.Interrumpido;
-                    ActualizarJerarquiaNavegacion();
-                    OnEstadoCambiado?.Invoke(estadoActual);
-
-                    if (managerEVE == null) managerEVE = FindFirstObjectByType<RobotManagerEVE>();
-                    managerEVE?.GestionarObstruccionAutonomaISO(this, hit.collider.gameObject);
                     break;
                 }
                 else if (hit.distance < distanciaDeteccionAlerta)
@@ -1878,7 +1947,7 @@ public class RobotAMR : MonoBehaviour
         }
 
         // Gestión activa de velocidad preventiva según LiDAR
-        if (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando)
+        if (agente != null && (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando))
         {
             float velocidadNominal = ObtenerVelocidadNominal();
             if (obstaculoDetectado)
@@ -2075,6 +2144,32 @@ public class RobotAMR : MonoBehaviour
         }
     }
 
+    public bool AplicarConsumoYVerificarCorteBMS(float gastoSoC)
+    {
+        if (gastoSoC > 0f)
+        {
+            bateriaActual -= gastoSoC;
+        }
+
+        // CRI-04: Acotamiento de batería y corte crítico al 0%
+        bateriaActual = Mathf.Max(0f, bateriaActual);
+        if (bateriaActual <= 0f && (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando))
+        {
+            if (agente != null && agente.enabled && agente.isOnNavMesh)
+            {
+                agente.isStopped = true;
+                agente.velocity = Vector3.zero;
+            }
+            estadoActual = EstadoRobot.Interrumpido;
+            ActualizarJerarquiaNavegacion();
+            OnEstadoCambiado?.Invoke(estadoActual);
+            DashboardUI.Instance?.RegistrarLog("<color=red><b>[FALLO CATASTRÓFICO]:</b> Celda agotada al 0% en pasillo. Unidad inmovilizada.</color>");
+            Debug.LogError("[FALLO CATASTRÓFICO] Batería agotada al 0% en pasillo. NavMeshAgent inmovilizado.");
+            return true;
+        }
+        return false;
+    }
+
     void Update()
     {
         if (estadoActual == EstadoRobot.Apagado) return;
@@ -2118,13 +2213,13 @@ public class RobotAMR : MonoBehaviour
                 float gasto = 0f;
                 if (estadoActual == EstadoRobot.En_Transito)
                 {
-                    gasto = distanciaRecorrida * coeficienteVacio;
+                    gasto = CalcularConsumoTramo(distanciaRecorrida, 0f, coeficienteVacio, coeficienteCarga, false, 1.0f);
                 }
                 else if (estadoActual == EstadoRobot.Transportando && pedidoActual != null)
                 {
                     // Inyección de Ruido Termodinámico: Oscilación orgánica (Perlin Noise) para fricción e ineficiencia de motor (0.98 a 1.15)
                     float factorDeRuido = Mathf.Lerp(0.98f, 1.15f, Mathf.PerlinNoise(Time.time * 0.5f, 0f));
-                    gasto = distanciaRecorrida * coeficienteCarga * (pedidoActual.peso_kg / 100f) * factorDeRuido;
+                    gasto = CalcularConsumoTramo(distanciaRecorrida, pedidoActual.peso_kg, coeficienteVacio, coeficienteCarga, true, factorDeRuido);
                 }
                 
                 bateriaActual -= gasto;
@@ -2132,20 +2227,7 @@ public class RobotAMR : MonoBehaviour
         }
 
         // CRI-04: Acotamiento de batería y corte crítico al 0%
-        bateriaActual = Mathf.Max(0f, bateriaActual);
-        if (bateriaActual <= 0f && (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando))
-        {
-            if (agente != null && agente.enabled && agente.isOnNavMesh)
-            {
-                agente.isStopped = true;
-                agente.velocity = Vector3.zero;
-            }
-            estadoActual = EstadoRobot.Interrumpido;
-            ActualizarJerarquiaNavegacion();
-            OnEstadoCambiado?.Invoke(estadoActual);
-            DashboardUI.Instance?.RegistrarLog("<color=red><b>[FALLO CATASTRÓFICO]:</b> Celda agotada al 0% en pasillo. Unidad inmovilizada.</color>");
-            Debug.LogError("[FALLO CATASTRÓFICO] Batería agotada al 0% en pasillo. NavMeshAgent inmovilizado.");
-        }
+        AplicarConsumoYVerificarCorteBMS(0f);
 
         // Telemetría con throttling (6.6 Hz / 0.15s) y compuerta por delta (> 0.1% o cambio de estado)
         if (Time.time >= tiempoProximoEnvioTelemetria || Mathf.Abs(bateriaActual - ultimaBateriaTransmitida) > 0.1f || estadoActual != ultimoEstadoTransmitido)

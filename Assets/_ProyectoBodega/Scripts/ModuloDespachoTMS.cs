@@ -52,6 +52,30 @@ public class ModuloDespachoTMS : MonoBehaviour
     public float PesoCamion1 => pesoAcumuladoCamion1;
     public float PesoCamion2 => pesoAcumuladoCamion2;
     public float PesoCamion3 => pesoAcumuladoCamion3;
+    public int CamionTurnoActual => camionTurnoActual;
+
+    public bool EstaEnInspeccionHumana(int numeroCamion)
+    {
+        if (numeroCamion < 1 || numeroCamion > 3) return false;
+        return inspeccionHumanaEnCurso[numeroCamion];
+    }
+
+    public float ObtenerPesoCamion(int numeroCamion)
+    {
+        switch (numeroCamion)
+        {
+            case 1: return pesoAcumuladoCamion1;
+            case 2: return pesoAcumuladoCamion2;
+            case 3: return pesoAcumuladoCamion3;
+            default: return 0f;
+        }
+    }
+
+    public static float CalcularZOffsetLIFO(int slotLIFO)
+    {
+        int slotClamped = Mathf.Clamp(slotLIFO, 1, CapacidadMaximaPalletsCamion);
+        return (2 - slotClamped) * EspaciadoSlotLIFOMetros;
+    }
 
     void Awake()
     {
@@ -167,7 +191,11 @@ public class ModuloDespachoTMS : MonoBehaviour
     {
         for (int i = 0; i < lista.Count; i++)
         {
-            if (lista[i] != null) Destroy(lista[i]);
+            if (lista[i] != null)
+            {
+                if (Application.isPlaying) Destroy(lista[i]);
+                else DestroyImmediate(lista[i]);
+            }
         }
         lista.Clear();
     }
@@ -185,13 +213,16 @@ public class ModuloDespachoTMS : MonoBehaviour
     public Transform ConsultarMuelleDestino(Pedido pedido, out int numeroCamion, out int slotLIFOProyectado)
     {
         numeroCamion = 0;
+        float pesoPedido = pedido != null ? pedido.peso_kg : 0f;
 
-        // Rotación secuencial 1 -> 2 -> 3 respetando máximo 3 pallets (físicos o reservados), sellado e inspección humana
+        // Rotación secuencial 1 -> 2 -> 3 respetando máximo 3 pallets (físicos o reservados), tonelaje máximo, sellado e inspección humana
         for (int offset = 0; offset < 3; offset++)
         {
             int candidato = ((camionTurnoActual - 1 + offset) % 3) + 1;
             int ocupados = Mathf.Max(slotsReservados[candidato], ObtenerListaPallets(candidato).Count);
-            if (!renovacionEnCurso[candidato] && !camionSellado[candidato] && !inspeccionHumanaEnCurso[candidato] && ocupados < CapacidadMaximaPalletsCamion)
+            bool dentroCapacidadPeso = ObtenerPesoCamion(candidato) + pesoPedido <= CapacidadMaximaCamionKg;
+            if (!renovacionEnCurso[candidato] && !camionSellado[candidato] && !inspeccionHumanaEnCurso[candidato] &&
+                ocupados < CapacidadMaximaPalletsCamion && dentroCapacidadPeso)
             {
                 numeroCamion = candidato;
                 break;
@@ -231,11 +262,14 @@ public class ModuloDespachoTMS : MonoBehaviour
         numeroCamionBloqueado = Mathf.Clamp(numeroCamionBloqueado, 1, 3);
         inspeccionHumanaEnCurso[numeroCamionBloqueado] = true;
 
-        if (rutinasInspeccionHumana[numeroCamionBloqueado] != null)
+        if (Application.isPlaying)
         {
-            StopCoroutine(rutinasInspeccionHumana[numeroCamionBloqueado]);
+            if (rutinasInspeccionHumana[numeroCamionBloqueado] != null)
+            {
+                StopCoroutine(rutinasInspeccionHumana[numeroCamionBloqueado]);
+            }
+            rutinasInspeccionHumana[numeroCamionBloqueado] = StartCoroutine(AutoLiberarInspeccionHumana(numeroCamionBloqueado));
         }
-        rutinasInspeccionHumana[numeroCamionBloqueado] = StartCoroutine(AutoLiberarInspeccionHumana(numeroCamionBloqueado));
 
         siguienteCamionOperativo = 0;
 
@@ -315,8 +349,7 @@ public class ModuloDespachoTMS : MonoBehaviour
 
         // Inversión LIFO física (Flatbed):
         // Slot 1 al fondo (Z = +1.60m), Slot 2 al centro (Z = 0m), Slot 3 cerca de rampa (Z = -1.60m)
-        int slotClamped = Mathf.Clamp(slotLIFOProyectado, 1, CapacidadMaximaPalletsCamion);
-        float zOffset = (2 - slotClamped) * EspaciadoSlotLIFOMetros;
+        float zOffset = CalcularZOffsetLIFO(slotLIFOProyectado);
 
         Transform sueloFalso = muelleTransform.parent != null ? muelleTransform.parent.Find("Suelo_Falso_NavMesh") : null;
         float ySuperficie = 1.813f;
@@ -383,7 +416,7 @@ public class ModuloDespachoTMS : MonoBehaviour
             int indiceLIFO = slotAsignado > 0
                 ? Mathf.Clamp(slotAsignado, 1, CapacidadMaximaPalletsCamion)
                 : Mathf.Clamp(pilaObjetivo.Count, 1, CapacidadMaximaPalletsCamion);
-            float zOffset = (2 - indiceLIFO) * EspaciadoSlotLIFOMetros;
+            float zOffset = CalcularZOffsetLIFO(indiceLIFO);
 
             Transform sueloFalso = muelleTransform.parent != null ? muelleTransform.parent.Find("Suelo_Falso_NavMesh") : null;
             float ySuperficie = 1.813f;
@@ -408,7 +441,7 @@ public class ModuloDespachoTMS : MonoBehaviour
             palletFisico.transform.rotation = muelleTransform.rotation;
         }
 
-        int estibasActuales = listaPallets.Count;
+        int estibasActuales = Mathf.Max(listaPallets.Count, pilaObjetivo.Count);
         slotsReservados[numeroCamion] = Mathf.Max(slotsReservados[numeroCamion], estibasActuales);
 
         string logMatriz = $"<color=cyan>[MATRIZ LIFO CAMIÓN {numeroCamion}]:</color> Estiba {pedido.id_pallet} apilada en Posición #{estibasActuales}/{CapacidadMaximaPalletsCamion} (Peso acumulado: {pesoAcumulado:F0} kg / {CapacidadMaximaCamionKg:F0} kg)";
@@ -418,7 +451,10 @@ public class ModuloDespachoTMS : MonoBehaviour
         if (estibasActuales >= CapacidadMaximaPalletsCamion && !renovacionEnCurso[numeroCamion] && !camionSellado[numeroCamion])
         {
             slotsReservados[numeroCamion] = CapacidadMaximaPalletsCamion;
-            StartCoroutine(SellarCamionYVerificarConvoy(numeroCamion, 2.5f));
+            if (Application.isPlaying)
+            {
+                StartCoroutine(SellarCamionYVerificarConvoy(numeroCamion, 2.5f));
+            }
         }
     }
 
