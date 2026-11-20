@@ -124,6 +124,20 @@ public class DashboardUI : MonoBehaviour
     private static readonly Color ColorDestelloPreventivoFila = new Color(0.96f, 0.62f, 0.04f, 0.32f);
     private static readonly Color ColorDestelloCriticoFila = new Color(0.94f, 0.27f, 0.27f, 0.38f);
 
+    [Header("Barra Operativa Inferior (Módulo 5)")]
+    public GameObject barraOperativaInferior;
+    public Button btnPausaSimulacion;
+    public Image imgBtnPausaSimulacion;
+    public TextMeshProUGUI txtBtnPausaSimulacion;
+    public Slider sliderVelocidadAMR;
+    public TextMeshProUGUI txtValorVelocidadAMR;
+    public Button btnExportarCSV;
+
+    private RobotManagerEVE eveSuscritoPausa;
+    private int ultimoFrameTogglePausa = -1;
+    private static readonly Color ColorBtnPausaNormal = new Color(0.118f, 0.161f, 0.231f, 1f);
+    private static readonly Color ColorBtnPausaActiva = new Color(0.706f, 0.325f, 0.035f, 1f);
+
     public void IniciarTurnoNocturno()
     {
         haSidoDesplegadoAMR03EnTurno = false;
@@ -146,6 +160,7 @@ public class DashboardUI : MonoBehaviour
         }
 
         InicializarPanelesColapsables();
+        ConfigurarBarraOperativaInferior();
         if (!SincronizarActivacionHUDSiAplica())
         {
             ConfigurarSelectorCamarasSCADA();
@@ -156,6 +171,7 @@ public class DashboardUI : MonoBehaviour
         }
 
         FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Include)?.IniciarTurno();
+        ConfigurarBarraOperativaInferior();
         RegistrarLog("<color=green>[SISTEMA]:</color> Módulo 4 iniciado por supervisor.");
     }
 
@@ -168,6 +184,17 @@ public class DashboardUI : MonoBehaviour
     {
         if (panelEmergencia != null)
         {
+            if (mostrar)
+            {
+                RobotManagerEVE evePausa = RobotManagerEVE.Instance != null
+                    ? RobotManagerEVE.Instance
+                    : FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Include);
+                if (evePausa != null && evePausa.SimulacionPausada)
+                {
+                    evePausa.EstablecerPausaSimulacion(false);
+                }
+            }
+
             bool flancoApertura = mostrar && !panelEmergencia.activeSelf;
             panelEmergencia.SetActive(mostrar);
             if (mostrar)
@@ -706,6 +733,7 @@ public class DashboardUI : MonoBehaviour
         InicializarPanelesColapsables();
         ConfigurarPopUpEjecutivoSLA();
         ConfigurarSelectorCamarasSCADA();
+        ConfigurarBarraOperativaInferior();
 
         RobotManagerEVE eve = FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Include);
         if (eve == null || !eve.turnoIniciado)
@@ -744,6 +772,7 @@ public class DashboardUI : MonoBehaviour
         {
             hudOperativoEstabaActivo = true;
             ConfigurarSelectorCamarasSCADA();
+            ConfigurarBarraOperativaInferior();
             RefrescarEstadoSelectorCamaras(true);
             return true;
         }
@@ -989,6 +1018,17 @@ public class DashboardUI : MonoBehaviour
 
     void OnDestroy()
     {
+        if (eveSuscritoPausa != null)
+        {
+            eveSuscritoPausa.OnPausaCambiada -= ActualizarVisualBotonPausa;
+            eveSuscritoPausa = null;
+        }
+
+        if (Time.timeScale == 0f)
+        {
+            Time.timeScale = 1f;
+        }
+
         if (Instance == this)
         {
             Instance = null;
@@ -1430,6 +1470,160 @@ public class DashboardUI : MonoBehaviour
         else if (textoLogLegacy != null)
         {
             textoLogLegacy.text = contenido;
+        }
+    }
+
+    public IReadOnlyList<string> ObtenerLineasBitacoraLimpia()
+    {
+        var lineas = new List<string>(logQueue.Count);
+        foreach (string entrada in logQueue)
+        {
+            if (string.IsNullOrEmpty(entrada)) continue;
+            string limpia = System.Text.RegularExpressions.Regex.Replace(entrada, "<.*?>", string.Empty).Trim();
+            if (!string.IsNullOrEmpty(limpia))
+            {
+                lineas.Add(limpia);
+            }
+        }
+        return lineas;
+    }
+
+    public void ConfigurarBarraOperativaInferior()
+    {
+        Transform barra = barraOperativaInferior != null
+            ? barraOperativaInferior.transform
+            : transform.Find("HUD_Operativo/Barra_Operativa_Inferior");
+
+        if (barra == null) return;
+        barraOperativaInferior = barra.gameObject;
+
+        if (btnPausaSimulacion == null)
+        {
+            btnPausaSimulacion = barra.Find("Btn_Pausa_Simulacion")?.GetComponent<Button>();
+        }
+        if (imgBtnPausaSimulacion == null && btnPausaSimulacion != null)
+        {
+            imgBtnPausaSimulacion = btnPausaSimulacion.GetComponent<Image>();
+        }
+        if (txtBtnPausaSimulacion == null && btnPausaSimulacion != null)
+        {
+            txtBtnPausaSimulacion = btnPausaSimulacion.GetComponentInChildren<TextMeshProUGUI>(true);
+        }
+
+        if (sliderVelocidadAMR == null)
+        {
+            sliderVelocidadAMR = barra.Find("Grupo_Velocidad_AMR/Slider_Velocidad_AMR")?.GetComponent<Slider>();
+        }
+        if (txtValorVelocidadAMR == null)
+        {
+            txtValorVelocidadAMR = barra.Find("Grupo_Velocidad_AMR/Txt_Valor_Velocidad")?.GetComponent<TextMeshProUGUI>();
+        }
+
+        if (btnExportarCSV == null)
+        {
+            btnExportarCSV = barra.Find("Btn_Exportar_CSV")?.GetComponent<Button>();
+        }
+
+        if (btnPausaSimulacion != null)
+        {
+            btnPausaSimulacion.onClick.RemoveListener(OnClickPausarReanudarSimulacion);
+            if (btnPausaSimulacion.onClick.GetPersistentEventCount() == 0)
+            {
+                btnPausaSimulacion.onClick.AddListener(OnClickPausarReanudarSimulacion);
+            }
+        }
+
+        if (btnExportarCSV != null)
+        {
+            btnExportarCSV.onClick.RemoveListener(OnClickExportarTelemetriaCSV);
+            if (btnExportarCSV.onClick.GetPersistentEventCount() == 0)
+            {
+                btnExportarCSV.onClick.AddListener(OnClickExportarTelemetriaCSV);
+            }
+        }
+
+        RobotManagerEVE eve = RobotManagerEVE.Instance != null
+            ? RobotManagerEVE.Instance
+            : FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Include);
+
+        float velocidadActual = eve != null ? eve.VelocidadFlotaActual : 3.5f;
+        if (sliderVelocidadAMR != null)
+        {
+            sliderVelocidadAMR.minValue = 2.0f;
+            sliderVelocidadAMR.maxValue = 5.5f;
+            sliderVelocidadAMR.onValueChanged.RemoveListener(OnVelocidadFlotaCambiada);
+            sliderVelocidadAMR.SetValueWithoutNotify(velocidadActual);
+            sliderVelocidadAMR.onValueChanged.AddListener(OnVelocidadFlotaCambiada);
+        }
+
+        if (txtValorVelocidadAMR != null)
+        {
+            txtValorVelocidadAMR.text = $"{velocidadActual.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} m/s";
+        }
+
+        if (eveSuscritoPausa != eve)
+        {
+            if (eveSuscritoPausa != null)
+            {
+                eveSuscritoPausa.OnPausaCambiada -= ActualizarVisualBotonPausa;
+            }
+            eveSuscritoPausa = eve;
+        }
+
+        if (eveSuscritoPausa != null)
+        {
+            eveSuscritoPausa.OnPausaCambiada -= ActualizarVisualBotonPausa;
+            eveSuscritoPausa.OnPausaCambiada += ActualizarVisualBotonPausa;
+            ActualizarVisualBotonPausa(eveSuscritoPausa.SimulacionPausada);
+        }
+        else
+        {
+            ActualizarVisualBotonPausa(false);
+        }
+    }
+
+    public void OnClickPausarReanudarSimulacion()
+    {
+        if (ultimoFrameTogglePausa == Time.frameCount) return;
+        ultimoFrameTogglePausa = Time.frameCount;
+
+        RobotManagerEVE eve = RobotManagerEVE.Instance != null
+            ? RobotManagerEVE.Instance
+            : FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Include);
+        if (eve == null) return;
+
+        bool pausada = eve.AlternarPausaSimulacion();
+        ActualizarVisualBotonPausa(pausada);
+    }
+
+    public void OnVelocidadFlotaCambiada(float valor)
+    {
+        float vel = Mathf.Clamp(valor, 2.0f, 5.5f);
+        RobotManagerEVE eve = RobotManagerEVE.Instance != null
+            ? RobotManagerEVE.Instance
+            : FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Include);
+        eve?.AjustarVelocidadFlotaEnVivo(vel);
+
+        if (txtValorVelocidadAMR != null)
+        {
+            txtValorVelocidadAMR.text = $"{vel.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} m/s";
+        }
+    }
+
+    public void OnClickExportarTelemetriaCSV()
+    {
+        ExportadorTelemetriaCSV.ExportarReporteTurnoCSV(out _);
+    }
+
+    private void ActualizarVisualBotonPausa(bool pausada)
+    {
+        if (imgBtnPausaSimulacion != null)
+        {
+            imgBtnPausaSimulacion.color = pausada ? ColorBtnPausaActiva : ColorBtnPausaNormal;
+        }
+        if (txtBtnPausaSimulacion != null)
+        {
+            txtBtnPausaSimulacion.text = pausada ? "REANUDAR [PAUSA]" : "PAUSAR TURNO";
         }
     }
 }

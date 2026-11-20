@@ -59,12 +59,18 @@ public class AudioEntidadIndustrial : MonoBehaviour
 
         EvaluarObjetivoAudio(velocidadMundo, velocidadVertical, out float volumenObjetivo, out float pitchObjetivo);
 
-        if (DashboardUI.Instance != null && DashboardUI.Instance.EsModalEmergenciaActivo())
+        bool enPausa = Time.timeScale <= 0.0001f;
+        if (enPausa)
+        {
+            volumenObjetivo = 0f;
+        }
+        else if (DashboardUI.Instance != null && DashboardUI.Instance.EsModalEmergenciaActivo())
         {
             volumenObjetivo *= 0.25f;
         }
 
-        volumenActual = Mathf.MoveTowards(volumenActual, volumenObjetivo, Time.unscaledDeltaTime * 0.85f);
+        float velocidadFade = enPausa ? 2.5f : 0.85f;
+        volumenActual = Mathf.MoveTowards(volumenActual, volumenObjetivo, Time.unscaledDeltaTime * velocidadFade);
         pitchActual = Mathf.Lerp(pitchActual, pitchObjetivo, Mathf.Clamp01(Time.unscaledDeltaTime * 6f));
 
         fuente3D.volume = volumenActual;

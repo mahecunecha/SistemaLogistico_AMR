@@ -11,7 +11,10 @@ using Debug = UnityEngine.Debug;
 
 public class RobotManagerEVE : MonoBehaviour
 {
+    public static RobotManagerEVE Instance { get; private set; }
+
     public event System.Action OnMisionEvaluada;
+    public event System.Action<bool> OnPausaCambiada;
 
     [Header("Waypoints de Vuelo")]
     public Transform[] waypoints;
@@ -116,8 +119,13 @@ public class RobotManagerEVE : MonoBehaviour
     private bool enSaltoTemporal = false;
     private int indiceCicloDemoHorizonte = 0;
 
+    // Control Operativo en Vivo (Módulo 5)
+    public float VelocidadFlotaActual { get; private set; } = 3.5f;
+    public bool SimulacionPausada { get; private set; } = false;
+
     void Awake()
     {
+        Instance = this;
         if (gestorTMS == null) gestorTMS = FindFirstObjectByType<ModuloDespachoTMS>();
         if (dronMantenimiento == null) dronMantenimiento = FindFirstObjectByType<DronMantenimiento>();
         if (robotAMR_01 == null)
@@ -146,18 +154,18 @@ public class RobotManagerEVE : MonoBehaviour
 
     void Update()
     {
-        if (Input.GetKeyDown(KeyCode.O) && turnoIniciado)
+        if (Input.GetKeyDown(KeyCode.O) && turnoIniciado && !SimulacionPausada)
         {
             InyectarObstaculoPasilloISO();
         }
 
-        if (turnoIniciado && !enSaltoTemporal && horaTurnoActual < 7.5f)
+        if (turnoIniciado && !SimulacionPausada && !enSaltoTemporal && horaTurnoActual < 7.5f)
         {
             float deltaHoras = (Time.deltaTime * RobotAMR.FactorCompresionTurno) / 3600f;
             horaTurnoActual = Mathf.Min(7.5f, horaTurnoActual + deltaHoras);
         }
 
-        if (Input.GetKeyDown(KeyCode.I) && turnoIniciado)
+        if (Input.GetKeyDown(KeyCode.I) && turnoIniciado && !SimulacionPausada)
         {
             bool shiftPresionado = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
             if (shiftPresionado)
@@ -174,14 +182,66 @@ public class RobotManagerEVE : MonoBehaviour
             }
         }
 
-        if (!turnoIniciado) return;
+        if (!turnoIniciado || SimulacionPausada) return;
         MoverPorWaypoints();
+    }
+
+    public void AjustarVelocidadFlotaEnVivo(float nuevaVelocidad)
+    {
+        VelocidadFlotaActual = Mathf.Clamp(nuevaVelocidad, 2.0f, 5.5f);
+        if (robotAMR_01 != null) robotAMR_01.EstablecerVelocidadBase(VelocidadFlotaActual);
+        if (robotAMR_02 != null) robotAMR_02.EstablecerVelocidadBase(VelocidadFlotaActual);
+        if (robotAMR_03 != null) robotAMR_03.EstablecerVelocidadBase(VelocidadFlotaActual);
+    }
+
+    public bool AlternarPausaSimulacion()
+    {
+        EstablecerPausaSimulacion(!SimulacionPausada);
+        return SimulacionPausada;
+    }
+
+    public void EstablecerPausaSimulacion(bool pausar)
+    {
+        if (!turnoIniciado) return;
+        if (DashboardUI.Instance != null && DashboardUI.Instance.EsModalEmergenciaActivo()) return;
+        if (SimulacionPausada == pausar && Mathf.Approximately(Time.timeScale, pausar ? 0f : 1f)) return;
+
+        SimulacionPausada = pausar;
+        Time.timeScale = pausar ? 0f : 1f;
+
+        if (pausar)
+        {
+            DashboardUI.Instance?.RegistrarLog("<color=#F59E0B>[SCADA] Simulación PAUSADA por supervisor.</color>");
+        }
+        else
+        {
+            DashboardUI.Instance?.RegistrarLog("<color=#10B981>[SCADA] Simulación REANUDADA.</color>");
+        }
+
+        OnPausaCambiada?.Invoke(SimulacionPausada);
+    }
+
+    void OnDestroy()
+    {
+        if (Instance == this)
+        {
+            Instance = null;
+        }
+        Time.timeScale = 1f;
+    }
+
+    void OnApplicationQuit()
+    {
+        Time.timeScale = 1f;
     }
 
     public void IniciarTurno()
     {
         if (turnoIniciado) return;
+        SimulacionPausada = false;
+        Time.timeScale = 1f;
         turnoIniciado = true;
+        AjustarVelocidadFlotaEnVivo(VelocidadFlotaActual);
         sesionOperativaIniciada = true;
         palletsEnColaWMS = 0;
         palletsCompletadosTurno = 0;
@@ -348,6 +408,12 @@ public class RobotManagerEVE : MonoBehaviour
 
     private void FinalizarTurnoYRetornarACarga(string mensajeCierre)
     {
+        if (SimulacionPausada)
+        {
+            SimulacionPausada = false;
+            Time.timeScale = 1f;
+            OnPausaCambiada?.Invoke(false);
+        }
         turnoIniciado = false;
         Debug.Log(mensajeCierre);
         DashboardUI.Instance?.RegistrarLog(mensajeCierre);
