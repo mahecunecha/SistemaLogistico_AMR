@@ -90,8 +90,30 @@ public class DashboardUI : MonoBehaviour
     [Header("Módulos")]
     [SerializeField] private GameObject panelMenuModulos;
 
+    [Header("Selector Minimizable de Cámaras SCADA")]
+    public GameObject panelSelectorCamaras;
+    public TextMeshProUGUI txtBtnCambiarCamara;
+    public Button btnCamAuto;
+    public Button btnCamGeneral;
+    public Button btnCamEVE;
+    public Button btnCamAMR01;
+    public Button btnCamAMR02;
+    public Button btnCamAMR03;
+    public Button btnCamDron;
+
+    private bool selectorCamarasExpandido = false;
+    private bool haSidoDesplegadoAMR03EnTurno = false;
+    private string ultimaCabeceraCamara = string.Empty;
+
     public void IniciarTurnoNocturno()
     {
+        haSidoDesplegadoAMR03EnTurno = false;
+        selectorCamarasExpandido = false;
+        if (panelSelectorCamaras != null)
+        {
+            panelSelectorCamaras.SetActive(false);
+        }
+
         if (panelMenuModulos != null) { panelMenuModulos.SetActive(false); }
         
         GameObject menuPrincipal = GameObject.Find("Canvas_MenuPrincipal");
@@ -101,6 +123,8 @@ public class DashboardUI : MonoBehaviour
         if (hud != null) hud.gameObject.SetActive(true);
 
         InicializarPanelesColapsables();
+        ConfigurarSelectorCamarasSCADA();
+        RefrescarEstadoSelectorCamaras(true);
 
         FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Include)?.IniciarTurno();
         RegistrarLog("<color=green>[SISTEMA]:</color> Módulo 4 iniciado por supervisor.");
@@ -121,18 +145,15 @@ public class DashboardUI : MonoBehaviour
         
         if (mostrar && textoDetalleEmergencia != null)
         {
-            string mensaje = "╔════════════════════════════════════════════════════════════════════════════════════════╗\n" +
-                             "║             ANOMALÍA PREDICTIVA: VIABILIDAD OPERATIVA COMPROMETIDA                     ║\n" +
-                             $"║  Retorno estimado: {bateriaProyectada:F1}% (±{varianzaMargen:F1}% tolerancia térmica)  |  Límite seguro: 20.0%            ║\n" +
-                             "╠════════════════════════════════════════════════════════════════════════════════════════╣\n" +
-                             "║  MATRIZ DE TRADE-OFF GERENCIAL (DECISIÓN SUPERVISOR - INDUSTRIA 5.0):                  ║\n" +
-                             "║                                                                                        ║\n" +
-                             "║  • [OPCIÓN A: FORZAR OVERRIDE]                                                         ║\n" +
-                             "║    Consumo motor: +30% | Aceleración: -50% | Degradación térmica de celda: ALTA.       ║\n" +
-                             "║                                                                                        ║\n" +
-                             "║  • [OPCIÓN B: ACTIVAR RELEVO 24/7]                                                     ║\n" +
-                             "║    Retirar AMR-01 a carga inductiva. Desplegar AMR-02 (80%) para asumir el pedido.     ║\n" +
-                             "╚════════════════════════════════════════════════════════════════════════════════════════╝";
+            string mensaje = "<b><color=#EF4444>ANOMALÍA PREDICTIVA: VIABILIDAD OPERATIVA COMPROMETIDA</color></b>\n" +
+                             $"Retorno estimado: <b>{bateriaProyectada:F1}%</b> (±{varianzaMargen:F1}% tolerancia térmica)  |  Límite seguro: <b>20.0%</b>\n" +
+                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                             "<b>MATRIZ DE TRADE-OFF GERENCIAL (DECISIÓN SUPERVISOR - INDUSTRIA 5.0)</b>\n\n" +
+                             "• <b>[OPCIÓN A: FORZAR OVERRIDE]</b>\n" +
+                             "  Consumo motor: +30% | Aceleración: -50% | Degradación térmica de celda: ALTA.\n\n" +
+                             "• <b>[OPCIÓN B: ACTIVAR RELEVO 24/7]</b>\n" +
+                             "  Retirar AMR-01 a carga inductiva. Desplegar AMR-02 (80%) para asumir el pedido.\n" +
+                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
             
             var prop = textoDetalleEmergencia.GetType().GetProperty("text");
             if (prop != null)
@@ -171,54 +192,42 @@ public class DashboardUI : MonoBehaviour
             string mensaje;
             if (escenario == RobotManagerEVE.EscenarioHorizonte.EscenarioA_InicioTurno)
             {
-                mensaje = "╔════════════════════════════════════════════════════════════════════════════════════════╗\n" +
-                          "║       ANALIZADOR HORIZONTE [ESCENARIO A - INICIO TURNO]: VIABILIDAD SLA OK             ║\n" +
-                          $"║  Reloj: Hora {horaActual:F1}/8 (Restan {horasRestantes:F1}h) | Lote: {nuevosPedidos} ped ({pesoLoteKg:F0} kg) | Déficit: -{deficitSoC:F1}% SoC   ║\n" +
-                          "║  Dictamen: Tiempo suficiente antes del amanecer, pero demanda (192.5%) supera el 60%  ║\n" +
-                          "║  nominal por unidad. Flota ideal: 3 AMRs (2 activos + 1 soporte/relevo inductivo).    ║\n" +
-                          "╠════════════════════════════════════════════════════════════════════════════════════════╣\n" +
-                          "║  DECISIÓN GERENCIAL DE HORIZONTE TEMPRANO (INDUSTRIA 5.0):                             ║\n" +
-                          "║                                                                                        ║\n" +
-                          "║  • [OPCIÓN A: DIFERIR EXCEDENTE / MANTENER 2 AMRs]                                     ║\n" +
-                          "║    Limitar operación al SoC actual sin habilitar el 3er AMR de relevo rotativo.        ║\n" +
-                          "║                                                                                        ║\n" +
-                          "║  • [OPCIÓN B: APROBAR FLOTA DE 3 AMRs (2 ACTIVOS + 1 RELEVO)]                          ║\n" +
-                          "║    Cumplir 100% del SLA (0% Carry-over) con ciclos de carga de oportunidad 1C.         ║\n" +
-                          "╚════════════════════════════════════════════════════════════════════════════════════════╝";
+                mensaje = "<b><color=#38BDF8>ANALIZADOR HORIZONTE [ESCENARIO A - INICIO TURNO]: VIABILIDAD SLA OK</color></b>\n" +
+                          $"Reloj: Hora <b>{horaActual:F1}/8</b> (Restan {horasRestantes:F1}h) | Lote: {nuevosPedidos} ped ({pesoLoteKg:F0} kg) | Déficit: -{deficitSoC:F1}% SoC\n" +
+                          "Dictamen: Tiempo suficiente antes del amanecer, pero demanda (192.5%) supera el 60% nominal por unidad. Flota ideal: 3 AMRs (2 activos + 1 soporte/relevo inductivo).\n" +
+                          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                          "<b>DECISIÓN GERENCIAL DE HORIZONTE TEMPRANO (INDUSTRIA 5.0)</b>\n\n" +
+                          "• <b>[OPCIÓN A: DIFERIR EXCEDENTE / MANTENER 2 AMRs]</b>\n" +
+                          "  Limitar operación al SoC actual sin habilitar el 3er AMR de relevo rotativo.\n\n" +
+                          "• <b>[OPCIÓN B: APROBAR FLOTA DE 3 AMRs (2 ACTIVOS + 1 RELEVO)]</b>\n" +
+                          "  Cumplir 100% del SLA (0% Carry-over) con ciclos de carga de oportunidad 1C.\n" +
+                          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
             }
             else if (escenario == RobotManagerEVE.EscenarioHorizonte.EscenarioB_Madrugada)
             {
-                mensaje = "╔════════════════════════════════════════════════════════════════════════════════════════╗\n" +
-                          "║      ANALIZADOR HORIZONTE [ESCENARIO B - MADRUGADA]: RIESGO MEDIO DE CORTE SLA         ║\n" +
-                          $"║  Reloj: Hora {horaActual:F1}/8 (Restan {horasRestantes:F1}h) | Rezago proyectado: {porcentajeCarryOver:F0}% | Déficit: -{deficitSoC:F1}% SoC ║\n" +
-                          $"║  Dictamen: Tasa de absorción actual (10 ped/h) dejará {porcentajeCarryOver:F0}% del lote sin entregar     ║\n" +
-                          "║  al corte (06:00 AM). Incrementar a 4 AMRs o autorizar Carry-over al turno diurno.    ║\n" +
-                          "╠════════════════════════════════════════════════════════════════════════════════════════╣\n" +
-                          "║  DECISIÓN GERENCIAL DE MADRUGADA (TRADE-OFF SLA vs. CAPEX):                            ║\n" +
-                          "║                                                                                        ║\n" +
-                          $"║  • [OPCIÓN A: AUTORIZAR CARRY-OVER ({porcentajeCarryOver:F0}% REZAGO AL TURNO DIURNO)]                    ║\n" +
-                          "║    Mantener 2 AMRs actuales hasta las 06:00 AM y transferir el saldo pendiente.        ║\n" +
-                          "║                                                                                        ║\n" +
-                          $"║  • [OPCIÓN B: INCREMENTAR FLOTA A {amrRequeridos} AMRs OPERATIVOS]                                  ║\n" +
-                          "║    Duplicar tasa de absorción (20 ped/h) para eliminar el Carry-over antes de 06:00 AM.║\n" +
-                          "╚════════════════════════════════════════════════════════════════════════════════════════╝";
+                mensaje = "<b><color=#F59E0B>ANALIZADOR HORIZONTE [ESCENARIO B - MADRUGADA]: RIESGO MEDIO DE CORTE SLA</color></b>\n" +
+                          $"Reloj: Hora <b>{horaActual:F1}/8</b> (Restan {horasRestantes:F1}h) | Rezago proyectado: <b>{porcentajeCarryOver:F0}%</b> | Déficit: -{deficitSoC:F1}% SoC\n" +
+                          $"Dictamen: Tasa de absorción actual (10 ped/h) dejará {porcentajeCarryOver:F0}% del lote sin entregar al corte (06:00 AM). Incrementar a 4 AMRs o autorizar Carry-over al turno diurno.\n" +
+                          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                          "<b>DECISIÓN GERENCIAL DE MADRUGADA (TRADE-OFF SLA vs. CAPEX)</b>\n\n" +
+                          $"• <b>[OPCIÓN A: AUTORIZAR CARRY-OVER ({porcentajeCarryOver:F0}% REZAGO AL TURNO DIURNO)]</b>\n" +
+                          "  Mantener 2 AMRs actuales hasta las 06:00 AM y transferir el saldo pendiente.\n\n" +
+                          $"• <b>[OPCIÓN B: INCREMENTAR FLOTA A {amrRequeridos} AMRs OPERATIVOS]</b>\n" +
+                          "  Duplicar tasa de absorción (20 ped/h) para eliminar el Carry-over antes de 06:00 AM.\n" +
+                          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
             }
             else
             {
-                mensaje = "╔════════════════════════════════════════════════════════════════════════════════════════╗\n" +
-                          "║       ANALIZADOR HORIZONTE [ESCENARIO C - FINAL TURNO]: COLAPSO LOGÍSTICO / SLA        ║\n" +
-                          $"║  Reloj: Hora {horaActual:F1}/8 (Restan {horasRestantes:F1}h) | Déficit Crítico LiFePO4: -{deficitSoC:F1}% SoC             ║\n" +
-                          $"║  Dictamen: Faltan 30 min y celdas en reserva. Capacidad actual colapsa ({porcentajeCarryOver:F0}% rezago).   ║\n" +
-                          $"║  Se requieren {amrRequeridos} AMRs de emergencia para mantener HBF o diferir el 100% del lote.      ║\n" +
-                          "╠════════════════════════════════════════════════════════════════════════════════════════╣\n" +
-                          "║  DECISIÓN GERENCIAL DE EMERGENCIA (CIERRE DE TURNO NOCTURNO):                          ║\n" +
-                          "║                                                                                        ║\n" +
-                          "║  • [OPCIÓN A: DIFERIR LOTE COMPLETO A TURNO DIURNO]                                    ║\n" +
-                          "║    Proteger SLA actual y piso térmico del 20% LiFePO4 en las 2 unidades en pista.      ║\n" +
-                          "║                                                                                        ║\n" +
-                          $"║  • [OPCIÓN B: APROBAR {amrRequeridos} AMRs DE EMERGENCIA (+1 BAHÍA TMS)]                             ║\n" +
-                          "║    Despliegue táctico inmediato para absorber las 42.5 t preservando el HBF.           ║\n" +
-                          "╚════════════════════════════════════════════════════════════════════════════════════════╝";
+                mensaje = "<b><color=#EF4444>ANALIZADOR HORIZONTE [ESCENARIO C - FINAL TURNO]: COLAPSO LOGÍSTICO / SLA</color></b>\n" +
+                          $"Reloj: Hora <b>{horaActual:F1}/8</b> (Restan {horasRestantes:F1}h) | Déficit Crítico LiFePO4: <b>-{deficitSoC:F1}% SoC</b>\n" +
+                          $"Dictamen: Faltan 30 min y celdas en reserva. Capacidad actual colapsa ({porcentajeCarryOver:F0}% rezago). Se requieren {amrRequeridos} AMRs de emergencia para mantener HBF o diferir el 100% del lote.\n" +
+                          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                          "<b>DECISIÓN GERENCIAL DE EMERGENCIA (CIERRE DE TURNO NOCTURNO)</b>\n\n" +
+                          "• <b>[OPCIÓN A: DIFERIR LOTE COMPLETO A TURNO DIURNO]</b>\n" +
+                          "  Proteger SLA actual y piso térmico del 20% LiFePO4 en las 2 unidades en pista.\n\n" +
+                          $"• <b>[OPCIÓN B: APROBAR {amrRequeridos} AMRs DE EMERGENCIA (+1 BAHÍA TMS)]</b>\n" +
+                          "  Despliegue táctico inmediato para absorber las 42.5 t preservando el HBF.\n" +
+                          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
             }
 
             var prop = textoDetalleEmergencia.GetType().GetProperty("text");
@@ -417,6 +426,7 @@ public class DashboardUI : MonoBehaviour
                 textosEstadoManifiesto[indice].color = color;
             }
         }
+        FindFirstObjectByType<GeneradorTablaManifiesto>(FindObjectsInactive.Include)?.RenderizarVista();
     }
 
     public void ConfigurarReservaAMR02(bool enReserva)
@@ -441,6 +451,10 @@ public class DashboardUI : MonoBehaviour
         }
 
         amr03Habilitado = activo;
+        if (activo)
+        {
+            haSidoDesplegadoAMR03EnTurno = true;
+        }
         alturaOriginalFlota = 502f;
 
         if (filaAMR03 != null)
@@ -473,6 +487,8 @@ public class DashboardUI : MonoBehaviour
         {
             panelFlotaRect.sizeDelta = new Vector2(panelFlotaRect.sizeDelta.x, alturaOriginalFlota);
         }
+
+        RefrescarEstadoSelectorCamaras(false);
     }
 
     private Queue<string> logQueue = new Queue<string>();
@@ -538,12 +554,22 @@ public class DashboardUI : MonoBehaviour
         ActualizarBannerTurno("<b><color=#38BDF8>TURNO NOCTURNO:</color> Hora 1/8 (Operación Nominal) | Química: <color=#F59E0B>LiFePO4</color> (80% - 20%)</b>");
 
         InicializarPanelesColapsables();
+        ConfigurarPopUpEjecutivoSLA();
+        ConfigurarSelectorCamarasSCADA();
 
         RobotManagerEVE eve = FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Include);
         if (eve == null || !eve.turnoIniciado)
         {
             Transform hud = transform.Find("HUD_Operativo");
             if (hud != null) hud.gameObject.SetActive(false);
+        }
+    }
+
+    void Update()
+    {
+        if (txtBtnCambiarCamara != null && txtBtnCambiarCamara.gameObject.activeInHierarchy)
+        {
+            RefrescarEstadoSelectorCamaras(false);
         }
     }
 
@@ -865,6 +891,190 @@ public class DashboardUI : MonoBehaviour
         }
     }
 
+    public void ConfigurarPopUpEjecutivoSLA()
+    {
+        if (panelPopupSLA == null) return;
+
+        RectTransform rt = panelPopupSLA.GetComponent<RectTransform>();
+        if (rt != null)
+        {
+            rt.anchorMin = new Vector2(0.5f, 0.5f);
+            rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(540f, 136f);
+            rt.anchoredPosition = new Vector2(0f, 260f);
+        }
+
+        if (txtTituloPopupSLA != null)
+        {
+            RectTransform rtTitulo = txtTituloPopupSLA.GetComponent<RectTransform>();
+            if (rtTitulo != null)
+            {
+                rtTitulo.anchorMin = new Vector2(0f, 1f);
+                rtTitulo.anchorMax = new Vector2(1f, 1f);
+                rtTitulo.pivot = new Vector2(0.5f, 1f);
+                rtTitulo.offsetMin = new Vector2(20f, -44f);
+                rtTitulo.offsetMax = new Vector2(-108f, -10f);
+            }
+        }
+
+        if (txtDetallePopupSLA != null)
+        {
+            txtDetallePopupSLA.verticalAlignment = VerticalAlignmentOptions.Middle;
+            txtDetallePopupSLA.margin = new Vector4(4f, 4f, 4f, 4f);
+        }
+    }
+
+    public void ConfigurarSelectorCamarasSCADA()
+    {
+        Transform panelScada = transform.Find("HUD_Operativo/Panel_Controles_SCADA");
+        if (panelScada == null) return;
+
+        Transform tBtnCam = panelScada.Find("Btn_Cambiar_Camara");
+        if (tBtnCam != null)
+        {
+            if (txtBtnCambiarCamara == null)
+            {
+                txtBtnCambiarCamara = tBtnCam.GetComponentInChildren<TextMeshProUGUI>(true);
+            }
+            Button btnHeader = tBtnCam.GetComponent<Button>();
+            if (btnHeader != null)
+            {
+                btnHeader.onClick.RemoveListener(ToggleSelectorCamaras);
+                btnHeader.onClick.AddListener(ToggleSelectorCamaras);
+            }
+        }
+
+        if (panelSelectorCamaras == null)
+        {
+            Transform tSelector = panelScada.Find("Panel_Selector_Camaras");
+            if (tSelector != null) panelSelectorCamaras = tSelector.gameObject;
+        }
+
+        if (panelSelectorCamaras != null)
+        {
+            if (btnCamAuto == null) btnCamAuto = panelSelectorCamaras.transform.Find("Btn_Cam_Auto")?.GetComponent<Button>();
+            if (btnCamGeneral == null) btnCamGeneral = panelSelectorCamaras.transform.Find("Btn_Cam_General")?.GetComponent<Button>();
+            if (btnCamEVE == null) btnCamEVE = panelSelectorCamaras.transform.Find("Btn_Cam_EVE")?.GetComponent<Button>();
+            if (btnCamAMR01 == null) btnCamAMR01 = panelSelectorCamaras.transform.Find("Btn_Cam_AMR01")?.GetComponent<Button>();
+            if (btnCamAMR02 == null) btnCamAMR02 = panelSelectorCamaras.transform.Find("Btn_Cam_AMR02")?.GetComponent<Button>();
+            if (btnCamAMR03 == null) btnCamAMR03 = panelSelectorCamaras.transform.Find("Btn_Cam_AMR03")?.GetComponent<Button>();
+            if (btnCamDron == null) btnCamDron = panelSelectorCamaras.transform.Find("Btn_Cam_Dron")?.GetComponent<Button>();
+
+            VincularBotonSelectorCamara(btnCamAuto, () => SeleccionarVistaDesdeUI(DirectorCinematico.ModoVistaCamara.AutoDirectorWMS));
+            VincularBotonSelectorCamara(btnCamGeneral, () => SeleccionarVistaDesdeUI(DirectorCinematico.ModoVistaCamara.GeneralPlanta));
+            VincularBotonSelectorCamara(btnCamEVE, () => SeleccionarVistaDesdeUI(DirectorCinematico.ModoVistaCamara.EveOrquestador));
+            VincularBotonSelectorCamara(btnCamAMR01, () => SeleccionarVistaDesdeUI(DirectorCinematico.ModoVistaCamara.AMR01));
+            VincularBotonSelectorCamara(btnCamAMR02, () => SeleccionarVistaDesdeUI(DirectorCinematico.ModoVistaCamara.AMR02));
+            VincularBotonSelectorCamara(btnCamAMR03, () => SeleccionarVistaDesdeUI(DirectorCinematico.ModoVistaCamara.AMR03));
+            VincularBotonSelectorCamara(btnCamDron, () => SeleccionarVistaDesdeUI(DirectorCinematico.ModoVistaCamara.DronSoporteISO));
+
+            panelSelectorCamaras.SetActive(selectorCamarasExpandido);
+        }
+
+        RefrescarEstadoSelectorCamaras(true);
+    }
+
+    private static void VincularBotonSelectorCamara(Button boton, UnityEngine.Events.UnityAction accion)
+    {
+        if (boton == null) return;
+        boton.onClick.RemoveAllListeners();
+        boton.onClick.AddListener(accion);
+    }
+
+    public void ToggleSelectorCamaras()
+    {
+        selectorCamarasExpandido = !selectorCamarasExpandido;
+        if (panelSelectorCamaras != null)
+        {
+            panelSelectorCamaras.SetActive(selectorCamarasExpandido);
+        }
+        RefrescarEstadoSelectorCamaras(true);
+    }
+
+    private void SeleccionarVistaDesdeUI(DirectorCinematico.ModoVistaCamara modo)
+    {
+        DirectorCinematico dir = DirectorCinematico.Instance != null
+            ? DirectorCinematico.Instance
+            : FindFirstObjectByType<DirectorCinematico>(FindObjectsInactive.Include);
+
+        if (dir != null)
+        {
+            switch (modo)
+            {
+                case DirectorCinematico.ModoVistaCamara.AutoDirectorWMS: dir.SeleccionarModoAuto(); break;
+                case DirectorCinematico.ModoVistaCamara.GeneralPlanta: dir.SeleccionarVistaGeneral(); break;
+                case DirectorCinematico.ModoVistaCamara.EveOrquestador: dir.SeleccionarVistaEVE(); break;
+                case DirectorCinematico.ModoVistaCamara.AMR01: dir.SeleccionarVistaAMR(1); break;
+                case DirectorCinematico.ModoVistaCamara.AMR02: dir.SeleccionarVistaAMR(2); break;
+                case DirectorCinematico.ModoVistaCamara.AMR03: dir.SeleccionarVistaAMR(3); break;
+                case DirectorCinematico.ModoVistaCamara.DronSoporteISO: dir.SeleccionarVistaDronSoporte(); break;
+            }
+        }
+
+        selectorCamarasExpandido = false;
+        if (panelSelectorCamaras != null)
+        {
+            panelSelectorCamaras.SetActive(false);
+        }
+        RefrescarEstadoSelectorCamaras(true);
+    }
+
+    public void RefrescarEstadoSelectorCamaras(bool forzarLayout)
+    {
+        DirectorCinematico dir = DirectorCinematico.Instance;
+        string etiqueta = dir != null ? dir.ObtenerEtiquetaVistaActiva() : "AUTO [Director WMS]";
+        string flecha = selectorCamarasExpandido ? "▲" : "▼";
+        string textoCabecera = $"CÁMARA: {etiqueta}  [{flecha}]";
+
+        bool cambioTexto = textoCabecera != ultimaCabeceraCamara;
+        if (cambioTexto && txtBtnCambiarCamara != null)
+        {
+            txtBtnCambiarCamara.text = textoCabecera;
+            ultimaCabeceraCamara = textoCabecera;
+        }
+
+        bool cambioVisibilidad = false;
+        if (panelSelectorCamaras != null)
+        {
+            RobotManagerEVE eve = FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Include);
+            RobotAMR amr02 = eve != null ? eve.robotAMR_02 : null;
+            RobotAMR amr03 = eve != null ? eve.robotAMR_03 : null;
+            DronMantenimiento dron = eve != null && eve.dronMantenimiento != null
+                ? eve.dronMantenimiento
+                : FindFirstObjectByType<DronMantenimiento>(FindObjectsInactive.Include);
+
+            bool verAMR02 = amr02 != null && amr02.gameObject.activeInHierarchy;
+            bool verAMR03 = amr03 != null && amr03.gameObject.activeInHierarchy && (haSidoDesplegadoAMR03EnTurno || amr03Habilitado);
+            bool verDron = dron != null && dron.gameObject.activeInHierarchy && dron.ocupado;
+
+            if (btnCamAMR02 != null && btnCamAMR02.gameObject.activeSelf != verAMR02)
+            {
+                btnCamAMR02.gameObject.SetActive(verAMR02);
+                cambioVisibilidad = true;
+            }
+            if (btnCamAMR03 != null && btnCamAMR03.gameObject.activeSelf != verAMR03)
+            {
+                btnCamAMR03.gameObject.SetActive(verAMR03);
+                cambioVisibilidad = true;
+            }
+            if (btnCamDron != null && btnCamDron.gameObject.activeSelf != verDron)
+            {
+                btnCamDron.gameObject.SetActive(verDron);
+                cambioVisibilidad = true;
+            }
+        }
+
+        if (forzarLayout || cambioVisibilidad)
+        {
+            Transform panelScada = transform.Find("HUD_Operativo/Panel_Controles_SCADA");
+            if (panelScada is RectTransform rectScada)
+            {
+                LayoutRebuilder.ForceRebuildLayoutImmediate(rectScada);
+            }
+        }
+    }
+
     private void AsegurarPopupSLA()
     {
         if (panelPopupSLA == null)
@@ -893,6 +1103,7 @@ public class DashboardUI : MonoBehaviour
                 Transform t = panelPopupSLA.transform.Find("Btn_Cerrar_Popup_SLA");
                 if (t != null) btnCerrarPopupSLA = t.GetComponent<Button>();
             }
+            ConfigurarPopUpEjecutivoSLA();
             return;
         }
 
@@ -906,8 +1117,8 @@ public class DashboardUI : MonoBehaviour
         rt.anchorMin = new Vector2(0.5f, 0.5f);
         rt.anchorMax = new Vector2(0.5f, 0.5f);
         rt.pivot = new Vector2(0.5f, 0.5f);
-        rt.sizeDelta = new Vector2(560f, 190f);
-        rt.anchoredPosition = new Vector2(0f, 120f);
+        rt.sizeDelta = new Vector2(540f, 136f);
+        rt.anchoredPosition = new Vector2(0f, 260f);
 
         Image bg = panelPopupSLA.GetComponent<Image>();
         bg.color = new Color(0.06f, 0.09f, 0.14f, 0.96f);
@@ -918,8 +1129,8 @@ public class DashboardUI : MonoBehaviour
         rtTitulo.anchorMin = new Vector2(0f, 1f);
         rtTitulo.anchorMax = new Vector2(1f, 1f);
         rtTitulo.pivot = new Vector2(0.5f, 1f);
-        rtTitulo.sizeDelta = new Vector2(-120f, 34f);
-        rtTitulo.anchoredPosition = new Vector2(-40f, -12f);
+        rtTitulo.offsetMin = new Vector2(20f, -44f);
+        rtTitulo.offsetMax = new Vector2(-108f, -10f);
         txtTituloPopupSLA = goTitulo.GetComponent<TextMeshProUGUI>();
         txtTituloPopupSLA.fontSize = 16f;
         txtTituloPopupSLA.fontStyle = FontStyles.Bold;
@@ -937,7 +1148,8 @@ public class DashboardUI : MonoBehaviour
         rtDetalle.offsetMax = new Vector2(-20f, -52f);
         txtDetallePopupSLA = goDetalle.GetComponent<TextMeshProUGUI>();
         txtDetallePopupSLA.fontSize = 14f;
-        txtDetallePopupSLA.alignment = TextAlignmentOptions.TopLeft;
+        txtDetallePopupSLA.alignment = TextAlignmentOptions.MidlineLeft;
+        txtDetallePopupSLA.margin = new Vector4(4f, 4f, 4f, 4f);
         txtDetallePopupSLA.color = new Color(0.9f, 0.94f, 0.98f, 1f);
         txtDetallePopupSLA.raycastTarget = false;
 
@@ -966,6 +1178,8 @@ public class DashboardUI : MonoBehaviour
         tmpCerrar.alignment = TextAlignmentOptions.Center;
         tmpCerrar.color = Color.white;
         tmpCerrar.raycastTarget = false;
+
+        ConfigurarPopUpEjecutivoSLA();
     }
 
     public void RegistrarLog(string mensaje)

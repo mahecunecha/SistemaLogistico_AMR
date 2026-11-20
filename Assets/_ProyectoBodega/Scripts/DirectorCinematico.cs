@@ -28,6 +28,31 @@ public class DirectorCinematico : MonoBehaviour
     [Header("Estado de Foco Crítico")]
     private bool focoIncidenteActivo = false;
 
+    public enum ModoVistaCamara
+    {
+        AutoDirectorWMS,
+        GeneralPlanta,
+        EveOrquestador,
+        AMR01,
+        AMR02,
+        AMR03,
+        DronSoporteISO
+    }
+
+    [Header("Control de Cámara SCADA")]
+    public bool modoCamaraManual = false;
+    public ModoVistaCamara vistaActual = ModoVistaCamara.AutoDirectorWMS;
+    public DronMantenimiento dronSoporte;
+    private ModoVistaCamara vistaPreviaDron = ModoVistaCamara.AutoDirectorWMS;
+    private RobotAMR amrEnfocadoVCam3;
+    private readonly Dictionary<RobotAMR, System.Action<RobotAMR.EstadoRobot>> handlersEstadoAMR =
+        new Dictionary<RobotAMR, System.Action<RobotAMR.EstadoRobot>>();
+
+    private CinemachineFollow followVCam3;
+    private CinemachineRotationComposer composerVCam3;
+    private CinemachineFollow followVCam4;
+    private CinemachineRotationComposer composerVCam4;
+
     private void Awake()
     {
         if (Instance != null && Instance != this)
@@ -292,11 +317,18 @@ public class DirectorCinematico : MonoBehaviour
 
         if (robotAMR != null)
         {
-            if (vcam3_AMR_Hombro != null) vcam3_AMR_Hombro.Target.TrackingTarget = robotAMR.transform;
+            if (!modoCamaraManual && vcam3_AMR_Hombro != null)
+            {
+                amrEnfocadoVCam3 = robotAMR;
+                vcam3_AMR_Hombro.Target.TrackingTarget = robotAMR.transform;
+            }
             if (!focoIncidenteActivo)
             {
                 if (vcam4_Emergencia != null) vcam4_Emergencia.Target.TrackingTarget = robotAMR.transform;
-                EvaluarEstadoAMR(robotAMR.estadoActual);
+                if (!modoCamaraManual)
+                {
+                    EvaluarEstadoAMR(robotAMR, robotAMR.estadoActual);
+                }
             }
         }
     }
@@ -321,6 +353,17 @@ public class DirectorCinematico : MonoBehaviour
             if (suscribir) managerEVE.OnMisionEvaluada += EnfocarEVE;
         }
 
+        foreach (var kvp in handlersEstadoAMR)
+        {
+            if (kvp.Key != null)
+            {
+                kvp.Key.OnEstadoCambiado -= kvp.Value;
+            }
+        }
+        handlersEstadoAMR.Clear();
+
+        if (!suscribir) return;
+
         var unicos = new HashSet<RobotAMR>();
         if (robotAMR != null) unicos.Add(robotAMR);
         if (managerEVE != null)
@@ -328,14 +371,68 @@ public class DirectorCinematico : MonoBehaviour
             if (managerEVE.robotAMR_01 != null) unicos.Add(managerEVE.robotAMR_01);
             if (managerEVE.robotAMR_02 != null) unicos.Add(managerEVE.robotAMR_02);
             if (managerEVE.robotAMR_03 != null) unicos.Add(managerEVE.robotAMR_03);
+            if (managerEVE.robotEjecutor != null) unicos.Add(managerEVE.robotEjecutor);
         }
 
         foreach (RobotAMR amr in unicos)
         {
             if (amr == null) continue;
-            amr.OnEstadoCambiado -= EvaluarEstadoAMR;
-            if (suscribir) amr.OnEstadoCambiado += EvaluarEstadoAMR;
+            RobotAMR capturaAMR = amr;
+            System.Action<RobotAMR.EstadoRobot> handler = estado => EvaluarEstadoAMR(capturaAMR, estado);
+            handlersEstadoAMR[capturaAMR] = handler;
+            capturaAMR.OnEstadoCambiado += handler;
         }
+    }
+
+    private static bool EstaEnMovimientoActivo(RobotAMR amr)
+    {
+        if (amr == null) return false;
+        return amr.estadoActual == RobotAMR.EstadoRobot.En_Transito ||
+               amr.estadoActual == RobotAMR.EstadoRobot.Transportando ||
+               amr.estadoActual == RobotAMR.EstadoRobot.Extrayendo ||
+               amr.estadoActual == RobotAMR.EstadoRobot.Entregando;
+    }
+
+    private RobotAMR BuscarOtroAMRActivo(RobotAMR excluir)
+    {
+        RobotAMR[] candidatos = ObtenerCandidatosFlota();
+        for (int i = 0; i < candidatos.Length; i++)
+        {
+            RobotAMR c = candidatos[i];
+            if (c == null || c == excluir || !c.gameObject.activeInHierarchy) continue;
+            if (EstaEnMovimientoActivo(c)) return c;
+        }
+        return null;
+    }
+
+    private RobotAMR ObtenerAMRPorIndice(int indiceUnidad)
+    {
+        if (managerEVE == null) managerEVE = FindFirstObjectByType<RobotManagerEVE>();
+        switch (indiceUnidad)
+        {
+            case 2:
+                return (managerEVE != null && managerEVE.robotAMR_02 != null)
+                    ? managerEVE.robotAMR_02
+                    : GameObject.Find("Robot_AMR_02")?.GetComponent<RobotAMR>();
+            case 3:
+                return (managerEVE != null && managerEVE.robotAMR_03 != null)
+                    ? managerEVE.robotAMR_03
+                    : GameObject.Find("Robot_AMR_03")?.GetComponent<RobotAMR>();
+            default:
+                return (managerEVE != null && managerEVE.robotAMR_01 != null)
+                    ? managerEVE.robotAMR_01
+                    : GameObject.Find("Robot_AMR")?.GetComponent<RobotAMR>();
+        }
+    }
+
+    private ModoVistaCamara ObtenerModoPorAMR(RobotAMR amr)
+    {
+        if (amr == null) return ModoVistaCamara.AutoDirectorWMS;
+        if (amr == ObtenerAMRPorIndice(2) || (!string.IsNullOrEmpty(amr.idRobot) && amr.idRobot.EndsWith("02")))
+            return ModoVistaCamara.AMR02;
+        if (amr == ObtenerAMRPorIndice(3) || (!string.IsNullOrEmpty(amr.idRobot) && amr.idRobot.EndsWith("03")))
+            return ModoVistaCamara.AMR03;
+        return ModoVistaCamara.AMR01;
     }
 
     private bool HayIncidenteActivoEnFlota()
@@ -399,11 +496,29 @@ public class DirectorCinematico : MonoBehaviour
     public void LiberarFocoIncidente(RobotAMR amrRelevo = null)
     {
         focoIncidenteActivo = false;
+
+        if (modoCamaraManual)
+        {
+            if (vistaActual == ModoVistaCamara.AMR01 || vistaActual == ModoVistaCamara.AMR02 || vistaActual == ModoVistaCamara.AMR03)
+            {
+                int idx = vistaActual == ModoVistaCamara.AMR02 ? 2 : (vistaActual == ModoVistaCamara.AMR03 ? 3 : 1);
+                RobotAMR objetivoManual = ObtenerAMRPorIndice(idx);
+                if ((objetivoManual == null || objetivoManual.estadoActual == RobotAMR.EstadoRobot.Apagado) &&
+                    amrRelevo != null && amrRelevo.estadoActual != RobotAMR.EstadoRobot.Apagado)
+                {
+                    vistaActual = ObtenerModoPorAMR(amrRelevo);
+                }
+            }
+            AplicarVistaActualSinCambiarModo();
+            return;
+        }
+
         DesactivarPrioridades();
 
         if (amrRelevo != null)
         {
             robotAMR = amrRelevo;
+            amrEnfocadoVCam3 = amrRelevo;
             if (vcam3_AMR_Hombro != null)
             {
                 vcam3_AMR_Hombro.Target.TrackingTarget = amrRelevo.transform;
@@ -414,6 +529,7 @@ public class DirectorCinematico : MonoBehaviour
         }
         else if (vcam2_EVE != null)
         {
+            amrEnfocadoVCam3 = null;
             vcam2_EVE.Priority = 10;
             Debug.Log("<color=orange>Director:</color> Foco de incidente liberado. Retorno a VCam2 (EVE).");
         }
@@ -421,19 +537,25 @@ public class DirectorCinematico : MonoBehaviour
 
     private void EnfocarEVE()
     {
-        // Guarda de protección: Si hay un incidente crítico activo o un AMR apagado/interrumpido, VCam4 retiene el foco
-        if (focoIncidenteActivo || HayIncidenteActivoEnFlota())
+        // Guarda de protección: si hay incidente crítico activo o cámara manual, respeta la vista actual
+        if (focoIncidenteActivo || HayIncidenteActivoEnFlota() || modoCamaraManual)
         {
-            Debug.Log("<color=orange>Director:</color> Enfoque a EVE omitido: incidente crítico activo en VCam4.");
+            return;
+        }
+
+        // Si ya hay un AMR en tránsito/transporte enfocado en VCam3, no robar el foco al despachar otra unidad
+        if (amrEnfocadoVCam3 != null && amrEnfocadoVCam3.gameObject.activeInHierarchy && EstaEnMovimientoActivo(amrEnfocadoVCam3))
+        {
             return;
         }
 
         DesactivarPrioridades();
+        amrEnfocadoVCam3 = null;
         if (vcam2_EVE != null) vcam2_EVE.Priority = 10;
         Debug.Log("<color=orange>Director:</color> Transición a VCam2 (EVE).");
     }
 
-    private void EvaluarEstadoAMR(RobotAMR.EstadoRobot estado)
+    private void EvaluarEstadoAMR(RobotAMR amrEmisor, RobotAMR.EstadoRobot estado)
     {
         if (estado == RobotAMR.EstadoRobot.Apagado || estado == RobotAMR.EstadoRobot.Interrumpido)
         {
@@ -447,8 +569,7 @@ public class DirectorCinematico : MonoBehaviour
         }
 
         if (focoIncidenteActivo) return;
-
-        DesactivarPrioridades();
+        if (modoCamaraManual) return;
 
         switch (estado)
         {
@@ -456,20 +577,54 @@ public class DirectorCinematico : MonoBehaviour
             case RobotAMR.EstadoRobot.Transportando:
             case RobotAMR.EstadoRobot.Extrayendo:
             case RobotAMR.EstadoRobot.Entregando:
-                if (vcam3_AMR_Hombro != null)
+            {
+                bool hayOtroEnfocadoActivo = amrEnfocadoVCam3 != null &&
+                                             amrEnfocadoVCam3 != amrEmisor &&
+                                             amrEnfocadoVCam3.gameObject.activeInHierarchy &&
+                                             EstaEnMovimientoActivo(amrEnfocadoVCam3);
+                bool esEjecutorActual = managerEVE != null && managerEVE.robotEjecutor == amrEmisor;
+
+                if (hayOtroEnfocadoActivo && !esEjecutorActual)
                 {
-                    RobotAMR objetivoActivo = (managerEVE != null && managerEVE.robotEjecutor != null && managerEVE.robotEjecutor.estadoActual != RobotAMR.EstadoRobot.Apagado)
+                    return;
+                }
+
+                RobotAMR objetivoActivo = amrEmisor != null
+                    ? amrEmisor
+                    : ((managerEVE != null && managerEVE.robotEjecutor != null && managerEVE.robotEjecutor.estadoActual != RobotAMR.EstadoRobot.Apagado)
                         ? managerEVE.robotEjecutor
-                        : robotAMR;
-                    if (objetivoActivo != null)
-                    {
-                        vcam3_AMR_Hombro.Target.TrackingTarget = objetivoActivo.transform;
-                    }
+                        : robotAMR);
+
+                if (vcam3_AMR_Hombro != null && objetivoActivo != null)
+                {
+                    DesactivarPrioridades();
+                    amrEnfocadoVCam3 = objetivoActivo;
+                    vcam3_AMR_Hombro.Target.TrackingTarget = objetivoActivo.transform;
                     vcam3_AMR_Hombro.Priority = 10;
                 }
                 Debug.Log("<color=orange>Director:</color> Transición a VCam3 (AMR_Hombro).");
                 break;
+            }
             case RobotAMR.EstadoRobot.Recargando:
+            {
+                if (amrEmisor != null && amrEnfocadoVCam3 != null && amrEmisor != amrEnfocadoVCam3 &&
+                    amrEnfocadoVCam3.gameObject.activeInHierarchy && EstaEnMovimientoActivo(amrEnfocadoVCam3))
+                {
+                    return;
+                }
+
+                RobotAMR otroActivo = BuscarOtroAMRActivo(amrEmisor);
+                if (otroActivo != null && vcam3_AMR_Hombro != null)
+                {
+                    DesactivarPrioridades();
+                    amrEnfocadoVCam3 = otroActivo;
+                    vcam3_AMR_Hombro.Target.TrackingTarget = otroActivo.transform;
+                    vcam3_AMR_Hombro.Priority = 10;
+                    return;
+                }
+
+                amrEnfocadoVCam3 = null;
+                DesactivarPrioridades();
                 if (managerEVE != null && managerEVE.turnoIniciado && vcam2_EVE != null)
                 {
                     vcam2_EVE.Priority = 10;
@@ -481,7 +636,27 @@ public class DirectorCinematico : MonoBehaviour
                     Debug.Log("<color=orange>Director:</color> AMR recargando (Fin de turno). Transición a VCam1 (Menu).");
                 }
                 break;
+            }
             case RobotAMR.EstadoRobot.Inactivo:
+            {
+                if (amrEmisor != null && amrEnfocadoVCam3 != null && amrEmisor != amrEnfocadoVCam3 &&
+                    amrEnfocadoVCam3.gameObject.activeInHierarchy && EstaEnMovimientoActivo(amrEnfocadoVCam3))
+                {
+                    return;
+                }
+
+                RobotAMR otroActivo = BuscarOtroAMRActivo(amrEmisor);
+                if (otroActivo != null && vcam3_AMR_Hombro != null)
+                {
+                    DesactivarPrioridades();
+                    amrEnfocadoVCam3 = otroActivo;
+                    vcam3_AMR_Hombro.Target.TrackingTarget = otroActivo.transform;
+                    vcam3_AMR_Hombro.Priority = 10;
+                    return;
+                }
+
+                amrEnfocadoVCam3 = null;
+                DesactivarPrioridades();
                 if (managerEVE != null && managerEVE.turnoIniciado && vcam2_EVE != null)
                 {
                     vcam2_EVE.Priority = 10;
@@ -493,12 +668,16 @@ public class DirectorCinematico : MonoBehaviour
                     Debug.Log("<color=orange>Director:</color> Transición a VCam1 (Menu).");
                 }
                 break;
+            }
         }
     }
 
     public void ActivarVistaGeneralFinDeTurno()
     {
         focoIncidenteActivo = false;
+        modoCamaraManual = false;
+        vistaActual = ModoVistaCamara.AutoDirectorWMS;
+        amrEnfocadoVCam3 = null;
         DesactivarPrioridades();
         if (vcam1_Menu != null) vcam1_Menu.Priority = 10;
         Debug.Log("<color=orange>Director:</color> Fin de turno. Transición a VCam1 (Vista General / Menu).");
@@ -506,9 +685,196 @@ public class DirectorCinematico : MonoBehaviour
 
     private int indiceCamaraSCADA = 0;
 
-    /// <summary>
-    /// Alterna manualmente entre las 5 vistas tácticas (General, AMR-01, AMR-02, AMR-03, Aérea EVE).
-    /// </summary>
+    public RobotAMR ObtenerAMREnfocadoActual()
+    {
+        if (vcam3_AMR_Hombro == null || vcam3_AMR_Hombro.Target.TrackingTarget == null)
+        {
+            return null;
+        }
+
+        int pCam3 = vcam3_AMR_Hombro.Priority.Value;
+        int pCam1 = vcam1_Menu != null ? vcam1_Menu.Priority.Value : int.MinValue;
+        int pCam2 = vcam2_EVE != null ? vcam2_EVE.Priority.Value : int.MinValue;
+        int pCam0 = vcam0_Intro != null ? vcam0_Intro.Priority.Value : int.MinValue;
+
+        if (pCam3 >= 10 && pCam3 >= pCam1 && pCam3 >= pCam2 && pCam3 >= pCam0)
+        {
+            return vcam3_AMR_Hombro.Target.TrackingTarget.GetComponent<RobotAMR>();
+        }
+        return null;
+    }
+
+    public string ObtenerEtiquetaVistaActiva()
+    {
+        switch (vistaActual)
+        {
+            case ModoVistaCamara.GeneralPlanta: return "General [Planta]";
+            case ModoVistaCamara.EveOrquestador: return "EVE [Orquestador]";
+            case ModoVistaCamara.AMR01: return "AMR-01 [Principal]";
+            case ModoVistaCamara.AMR02: return "AMR-02 [Soporte]";
+            case ModoVistaCamara.AMR03: return "AMR-03 [Reserva 24/7]";
+            case ModoVistaCamara.DronSoporteISO: return "Dron Soporte [ISO]";
+            case ModoVistaCamara.AutoDirectorWMS:
+            default:
+                return "AUTO [Director WMS]";
+        }
+    }
+
+    public void SeleccionarModoAuto()
+    {
+        modoCamaraManual = false;
+        vistaActual = ModoVistaCamara.AutoDirectorWMS;
+        focoIncidenteActivo = false;
+
+        if (HayIncidenteActivoEnFlota())
+        {
+            RobotAMR amrIncidente = BuscarAMRPorEstadoPrioritario(RobotAMR.EstadoRobot.Apagado)
+                ?? BuscarAMRPorEstadoPrioritario(RobotAMR.EstadoRobot.Interrumpido);
+            if (amrIncidente != null)
+            {
+                EnfocarIncidenteCritico(amrIncidente.transform);
+                return;
+            }
+        }
+
+        DesactivarPrioridades();
+        RobotAMR candidato = (managerEVE != null && EstaEnMovimientoActivo(managerEVE.robotEjecutor))
+            ? managerEVE.robotEjecutor
+            : BuscarOtroAMRActivo(null);
+
+        if (candidato != null && vcam3_AMR_Hombro != null)
+        {
+            amrEnfocadoVCam3 = candidato;
+            robotAMR = candidato;
+            vcam3_AMR_Hombro.Target.TrackingTarget = candidato.transform;
+            vcam3_AMR_Hombro.Priority = 10;
+        }
+        else if (managerEVE != null && managerEVE.turnoIniciado && vcam2_EVE != null)
+        {
+            amrEnfocadoVCam3 = null;
+            vcam2_EVE.Priority = 10;
+        }
+        else if (vcam1_Menu != null)
+        {
+            amrEnfocadoVCam3 = null;
+            vcam1_Menu.Priority = 10;
+        }
+
+        DashboardUI.Instance?.RegistrarLog("<color=#38BDF8>[CÁMARA]:</color> Modo AUTO [Director WMS] activado.");
+    }
+
+    public void SeleccionarVistaGeneral()
+    {
+        modoCamaraManual = true;
+        vistaActual = ModoVistaCamara.GeneralPlanta;
+        focoIncidenteActivo = false;
+        amrEnfocadoVCam3 = null;
+        DesactivarPrioridades();
+        if (vcam1_Menu != null) vcam1_Menu.Priority = 20;
+        DashboardUI.Instance?.RegistrarLog("<color=#38BDF8>[CÁMARA]:</color> Vista manual General [Planta].");
+    }
+
+    public void SeleccionarVistaEVE()
+    {
+        modoCamaraManual = true;
+        vistaActual = ModoVistaCamara.EveOrquestador;
+        focoIncidenteActivo = false;
+        amrEnfocadoVCam3 = null;
+        DesactivarPrioridades();
+        if (vcam2_EVE != null) vcam2_EVE.Priority = 20;
+        DashboardUI.Instance?.RegistrarLog("<color=#38BDF8>[CÁMARA]:</color> Vista manual EVE [Orquestador].");
+    }
+
+    public void SeleccionarVistaAMR(int indiceUnidad)
+    {
+        RobotAMR objetivo = ObtenerAMRPorIndice(indiceUnidad);
+        if (objetivo == null || vcam3_AMR_Hombro == null) return;
+
+        modoCamaraManual = true;
+        vistaActual = indiceUnidad == 2
+            ? ModoVistaCamara.AMR02
+            : (indiceUnidad == 3 ? ModoVistaCamara.AMR03 : ModoVistaCamara.AMR01);
+        focoIncidenteActivo = false;
+        amrEnfocadoVCam3 = objetivo;
+        robotAMR = objetivo;
+
+        DesactivarPrioridades();
+        vcam3_AMR_Hombro.Target.TrackingTarget = objetivo.transform;
+        vcam3_AMR_Hombro.Priority = 20;
+        DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[CÁMARA]:</color> Seguimiento manual {ObtenerEtiquetaVistaActiva()}.");
+    }
+
+    public void SeleccionarVistaDronSoporte()
+    {
+        if (dronSoporte == null) dronSoporte = FindFirstObjectByType<DronMantenimiento>();
+        if (dronSoporte == null || !dronSoporte.ocupado || vcam3_AMR_Hombro == null) return;
+
+        if (vistaActual != ModoVistaCamara.DronSoporteISO)
+        {
+            vistaPreviaDron = vistaActual;
+        }
+
+        modoCamaraManual = true;
+        vistaActual = ModoVistaCamara.DronSoporteISO;
+        focoIncidenteActivo = false;
+        amrEnfocadoVCam3 = null;
+
+        DesactivarPrioridades();
+        vcam3_AMR_Hombro.Target.TrackingTarget = dronSoporte.transform;
+        vcam3_AMR_Hombro.Priority = 20;
+        DashboardUI.Instance?.RegistrarLog("<color=#38BDF8>[CÁMARA]:</color> Seguimiento aéreo Dron Soporte [ISO].");
+    }
+
+    private void RestaurarVistaPreviaDron()
+    {
+        ModoVistaCamara destino = vistaPreviaDron;
+        if (destino == ModoVistaCamara.DronSoporteISO || destino == ModoVistaCamara.AutoDirectorWMS)
+        {
+            SeleccionarModoAuto();
+            return;
+        }
+        vistaActual = destino;
+        AplicarVistaActualSinCambiarModo();
+    }
+
+    private void AplicarVistaActualSinCambiarModo()
+    {
+        switch (vistaActual)
+        {
+            case ModoVistaCamara.GeneralPlanta:
+                SeleccionarVistaGeneral();
+                break;
+            case ModoVistaCamara.EveOrquestador:
+                SeleccionarVistaEVE();
+                break;
+            case ModoVistaCamara.AMR01:
+                SeleccionarVistaAMR(1);
+                break;
+            case ModoVistaCamara.AMR02:
+                SeleccionarVistaAMR(2);
+                break;
+            case ModoVistaCamara.AMR03:
+                SeleccionarVistaAMR(3);
+                break;
+            case ModoVistaCamara.DronSoporteISO:
+                if (dronSoporte != null && dronSoporte.ocupado && vcam3_AMR_Hombro != null)
+                {
+                    DesactivarPrioridades();
+                    vcam3_AMR_Hombro.Target.TrackingTarget = dronSoporte.transform;
+                    vcam3_AMR_Hombro.Priority = 20;
+                }
+                else
+                {
+                    RestaurarVistaPreviaDron();
+                }
+                break;
+            case ModoVistaCamara.AutoDirectorWMS:
+            default:
+                SeleccionarModoAuto();
+                break;
+        }
+    }
+
     public void CiclarCamaraSCADA()
     {
         AlternarCamaraManual();
@@ -516,40 +882,81 @@ public class DirectorCinematico : MonoBehaviour
 
     public void AlternarCamaraManual()
     {
-        focoIncidenteActivo = false;
-        if (managerEVE == null) managerEVE = FindFirstObjectByType<RobotManagerEVE>();
-
-        RobotAMR amr01 = (managerEVE != null && managerEVE.robotAMR_01 != null) ? managerEVE.robotAMR_01 : GameObject.Find("Robot_AMR")?.GetComponent<RobotAMR>();
-        RobotAMR amr02 = (managerEVE != null && managerEVE.robotAMR_02 != null) ? managerEVE.robotAMR_02 : GameObject.Find("Robot_AMR_02")?.GetComponent<RobotAMR>();
-        RobotAMR amr03 = (managerEVE != null && managerEVE.robotAMR_03 != null) ? managerEVE.robotAMR_03 : GameObject.Find("Robot_AMR_03")?.GetComponent<RobotAMR>();
-
-        var vistas = new (CinemachineCamera cam, RobotAMR targetAMR, string descripcion)[]
+        indiceCamaraSCADA = (indiceCamaraSCADA + 1) % 6;
+        switch (indiceCamaraSCADA)
         {
-            (vcam1_Menu, null, "CÁMARA: PANORÁMICA GENERAL (SCADA)"),
-            (vcam3_AMR_Hombro, amr01, "CÁMARA: SEGUIMIENTO HOMBRO (AMR-01)"),
-            (vcam3_AMR_Hombro, amr02, "CÁMARA: SEGUIMIENTO HOMBRO (AMR-02)"),
-            (vcam3_AMR_Hombro, amr03, "CÁMARA: SEGUIMIENTO HOMBRO (AMR-03)"),
-            (vcam2_EVE, null, "CÁMARA: ORQUESTADOR CENTRAL EVE (SCADA)")
-        };
+            case 0: SeleccionarModoAuto(); break;
+            case 1: SeleccionarVistaGeneral(); break;
+            case 2: SeleccionarVistaAMR(1); break;
+            case 3: SeleccionarVistaAMR(2); break;
+            case 4: SeleccionarVistaAMR(3); break;
+            case 5: SeleccionarVistaEVE(); break;
+        }
+    }
 
-        for (int intento = 0; intento < vistas.Length; intento++)
+    private void LateUpdate()
+    {
+        if (vistaActual == ModoVistaCamara.DronSoporteISO && !focoIncidenteActivo)
         {
-            indiceCamaraSCADA = (indiceCamaraSCADA + 1) % vistas.Length;
-            var seleccion = vistas[indiceCamaraSCADA];
-            if (seleccion.cam == null) continue;
-            if (seleccion.cam == vcam3_AMR_Hombro && seleccion.targetAMR == null) continue;
-
-            DesactivarPrioridades();
-            if (seleccion.targetAMR != null)
+            if (dronSoporte == null) dronSoporte = FindFirstObjectByType<DronMantenimiento>();
+            if (dronSoporte == null || !dronSoporte.ocupado)
             {
-                robotAMR = seleccion.targetAMR;
-                vcam3_AMR_Hombro.Target.TrackingTarget = seleccion.targetAMR.transform;
+                RestaurarVistaPreviaDron();
             }
-            seleccion.cam.Priority = 20;
+        }
 
-            Debug.Log($"<color=orange>Director [SCADA]:</color> {seleccion.descripcion}");
-            DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[{seleccion.descripcion}]</color>");
-            return;
+        ActualizarEncuadreDinamico();
+    }
+
+    private void ActualizarEncuadreDinamico()
+    {
+        float dt = Time.deltaTime * 3.5f;
+
+        if (vcam3_AMR_Hombro != null)
+        {
+            if (followVCam3 == null) followVCam3 = vcam3_AMR_Hombro.GetComponent<CinemachineFollow>();
+            if (composerVCam3 == null) composerVCam3 = vcam3_AMR_Hombro.GetComponent<CinemachineRotationComposer>();
+
+            Transform target3 = vcam3_AMR_Hombro.Target.TrackingTarget;
+            RobotAMR amr3 = target3 != null ? target3.GetComponent<RobotAMR>() : null;
+            bool conCarga3 = amr3 != null && (amr3.TieneCargaFisica ||
+                amr3.estadoActual == RobotAMR.EstadoRobot.Transportando ||
+                amr3.estadoActual == RobotAMR.EstadoRobot.Extrayendo ||
+                amr3.estadoActual == RobotAMR.EstadoRobot.Entregando);
+
+            Vector3 followObj3 = conCarga3 ? new Vector3(1.85f, 2.75f, -4.15f) : new Vector3(1.50f, 2.00f, -3.00f);
+            Vector3 targetObj3 = conCarga3 ? new Vector3(0.00f, 1.45f, 0.00f) : new Vector3(0.00f, 1.00f, 0.00f);
+
+            if (followVCam3 != null)
+            {
+                followVCam3.FollowOffset = Vector3.Lerp(followVCam3.FollowOffset, followObj3, dt);
+            }
+            if (composerVCam3 != null)
+            {
+                composerVCam3.TargetOffset = Vector3.Lerp(composerVCam3.TargetOffset, targetObj3, dt);
+            }
+        }
+
+        if (vcam4_Emergencia != null)
+        {
+            if (followVCam4 == null) followVCam4 = vcam4_Emergencia.GetComponent<CinemachineFollow>();
+            if (composerVCam4 == null) composerVCam4 = vcam4_Emergencia.GetComponent<CinemachineRotationComposer>();
+
+            Transform target4 = vcam4_Emergencia.Target.TrackingTarget;
+            RobotAMR amr4 = target4 != null ? target4.GetComponent<RobotAMR>() : null;
+            bool encuadreAmplio4 = amr4 != null && (amr4.TieneCargaFisica || amr4.EnParadaSeguridadLiDAR);
+
+            Vector3 followObj4 = encuadreAmplio4 ? new Vector3(1.95f, 2.25f, -3.90f) : new Vector3(1.10f, 1.35f, -2.40f);
+            Vector3 targetObj4 = encuadreAmplio4 ? new Vector3(0.00f, 1.35f, 0.00f) : new Vector3(0.00f, 0.85f, 0.00f);
+
+            if (followVCam4 != null)
+            {
+                followVCam4.FollowOffset = Vector3.Lerp(followVCam4.FollowOffset, followObj4, dt);
+            }
+            if (composerVCam4 != null)
+            {
+                composerVCam4.TargetOffset = Vector3.Lerp(composerVCam4.TargetOffset, targetObj4, dt);
+            }
         }
     }
 

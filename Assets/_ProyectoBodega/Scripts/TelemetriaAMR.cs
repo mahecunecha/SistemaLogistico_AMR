@@ -14,7 +14,7 @@ public class TelemetriaAMR : MonoBehaviour
 
     [Header("Elevación Dinámica Píldora")]
     public float alturaLocalVacio = 1.05f;
-    public float alturaLocalConCarga = 2.35f;
+    public float alturaLocalConCarga = 2.18f;
 
     [Header("Throttling Settings")]
     private float tiempoProximoRefrescoETA = 0f;
