@@ -136,9 +136,16 @@ public class GeneradorTablaManifiesto : MonoBehaviour
                 columnas[c].fontSize = 11f;
             }
 
+            columnas[0].alignment = TextAlignmentOptions.MidlineLeft;
+            columnas[1].alignment = TextAlignmentOptions.MidlineLeft;
+            columnas[1].overflowMode = TextOverflowModes.Ellipsis;
+            columnas[2].alignment = TextAlignmentOptions.Center;
+            columnas[3].alignment = TextAlignmentOptions.MidlineRight;
+
             columnas[4].text = "PENDIENTE";
             columnas[4].color = new Color(0.94f, 0.27f, 0.27f, 1f);
             columnas[4].fontSize = 11f;
+            columnas[4].alignment = TextAlignmentOptions.Center;
 
             if (DashboardUI.Instance != null && DashboardUI.Instance.textosEstadoManifiesto != null)
             {
@@ -151,6 +158,7 @@ public class GeneradorTablaManifiesto : MonoBehaviour
         {
             filaResumenGO.transform.SetAsLastSibling();
         }
+        RenderizarVista();
     }
 
     private void AsegurarAlturaFila(GameObject fila)
@@ -219,14 +227,71 @@ public class GeneradorTablaManifiesto : MonoBehaviour
                     columnasResumenLote[c].color = Color.white;
                     columnasResumenLote[c].fontSize = 11f;
                 }
+                columnasResumenLote[0].alignment = TextAlignmentOptions.MidlineLeft;
+                columnasResumenLote[1].alignment = TextAlignmentOptions.MidlineLeft;
+                columnasResumenLote[1].overflowMode = TextOverflowModes.Ellipsis;
+                columnasResumenLote[2].alignment = TextAlignmentOptions.Center;
+                columnasResumenLote[3].alignment = TextAlignmentOptions.MidlineRight;
                 columnasResumenLote[4].text = "COLA WMS";
                 columnasResumenLote[4].color = new Color(0.22f, 0.74f, 0.97f, 1f);
                 columnasResumenLote[4].fontSize = 11f;
+                columnasResumenLote[4].alignment = TextAlignmentOptions.Center;
             }
         }
         else if (filaResumenGO != null)
         {
             filaResumenGO.SetActive(false);
+        }
+
+        RenderizarVista();
+    }
+
+    public void RenderizarVista()
+    {
+        ResolverContenedorYScroll();
+        if (contenedorFilas == null) return;
+
+        int indiceFilaDato = 0;
+        for (int i = 0; i < contenedorFilas.childCount; i++)
+        {
+            Transform child = contenedorFilas.GetChild(i);
+            if (child == null || !child.gameObject.activeSelf) continue;
+            if (child.name == "Header_Manifiesto" || child.name == "Fila_Titulos") continue;
+
+            Image fondo = child.GetComponent<Image>();
+            if (fondo == null)
+            {
+                fondo = child.gameObject.AddComponent<Image>();
+                fondo.raycastTarget = false;
+            }
+
+            if (child.gameObject == filaResumenGO || child.name == "Fila_Resumen_Lote")
+            {
+                fondo.color = new Color(0.07f, 0.10f, 0.16f, 0.92f);
+                continue;
+            }
+
+            TextMeshProUGUI[] cols = child.GetComponentsInChildren<TextMeshProUGUI>(true);
+            string estado = (cols != null && cols.Length >= 5 && cols[4] != null) ? cols[4].text : string.Empty;
+            bool enEjecucion = estado == "EN TRÁNSITO" ||
+                               estado == "TRANSPORTANDO" ||
+                               estado == "EXTRAYENDO" ||
+                               estado == "ENTREGANDO";
+
+            if (enEjecucion)
+            {
+                fondo.color = new Color(0.08f, 0.26f, 0.22f, 0.88f);
+            }
+            else if (indiceFilaDato % 2 == 0)
+            {
+                fondo.color = new Color(0.10f, 0.14f, 0.21f, 0.78f);
+            }
+            else
+            {
+                fondo.color = new Color(0.14f, 0.19f, 0.27f, 0.78f);
+            }
+
+            indiceFilaDato++;
         }
     }
 

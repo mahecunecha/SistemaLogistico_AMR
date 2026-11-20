@@ -1066,20 +1066,9 @@ public class RobotManagerEVE : MonoBehaviour
 
     private RobotAMR ObtenerAMREnfocadoEnVCam3()
     {
-        DirectorCinematico director = DirectorCinematico.Instance;
-        if (director == null || director.vcam3_AMR_Hombro == null || director.vcam3_AMR_Hombro.Target.TrackingTarget == null)
+        if (DirectorCinematico.Instance != null)
         {
-            return null;
-        }
-
-        CinemachineCamera cam3 = director.vcam3_AMR_Hombro;
-        int pCam3 = cam3.Priority.Value;
-        int pCam1 = director.vcam1_Menu != null ? director.vcam1_Menu.Priority.Value : int.MinValue;
-        int pCam2 = director.vcam2_EVE != null ? director.vcam2_EVE.Priority.Value : int.MinValue;
-
-        if (pCam3 >= 10 && pCam3 >= pCam1 && pCam3 >= pCam2)
-        {
-            return cam3.Target.TrackingTarget.GetComponent<RobotAMR>();
+            return DirectorCinematico.Instance.ObtenerAMREnfocadoActual();
         }
         return null;
     }
