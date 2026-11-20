@@ -100,7 +100,9 @@ public class DashboardUI : MonoBehaviour
         Transform hud = transform.Find("HUD_Operativo");
         if (hud != null) hud.gameObject.SetActive(true);
 
-        FindObjectOfType<RobotManagerEVE>()?.IniciarTurno();
+        InicializarPanelesColapsables();
+
+        FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Include)?.IniciarTurno();
         RegistrarLog("<color=green>[SISTEMA]:</color> Módulo 4 iniciado por supervisor.");
     }
 
@@ -487,6 +489,13 @@ public class DashboardUI : MonoBehaviour
             return;
         }
         Instance = this;
+
+        RobotManagerEVE eve = FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Include);
+        if (eve == null || !eve.turnoIniciado)
+        {
+            Transform hud = transform.Find("HUD_Operativo");
+            if (hud != null) hud.gameObject.SetActive(false);
+        }
     }
 
     void Start()
@@ -529,24 +538,31 @@ public class DashboardUI : MonoBehaviour
         ActualizarBannerTurno("<b><color=#38BDF8>TURNO NOCTURNO:</color> Hora 1/8 (Operación Nominal) | Química: <color=#F59E0B>LiFePO4</color> (80% - 20%)</b>");
 
         InicializarPanelesColapsables();
+
+        RobotManagerEVE eve = FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Include);
+        if (eve == null || !eve.turnoIniciado)
+        {
+            Transform hud = transform.Find("HUD_Operativo");
+            if (hud != null) hud.gameObject.SetActive(false);
+        }
     }
 
     private void InicializarPanelesColapsables()
     {
         if (panelManifiestoRect == null)
         {
-            var go = GameObject.Find("UI_Dashboard_Corporativo/HUD_Operativo/Manifiesto");
-            if (go != null) panelManifiestoRect = go.GetComponent<RectTransform>();
+            Transform t = transform.Find("HUD_Operativo/Manifiesto");
+            if (t != null) panelManifiestoRect = t.GetComponent<RectTransform>();
         }
         if (panelFlotaRect == null)
         {
-            var go = GameObject.Find("UI_Dashboard_Corporativo/HUD_Operativo/Panel_Flota");
-            if (go != null) panelFlotaRect = go.GetComponent<RectTransform>();
+            Transform t = transform.Find("HUD_Operativo/Panel_Flota");
+            if (t != null) panelFlotaRect = t.GetComponent<RectTransform>();
         }
         if (panelTerminalRect == null)
         {
-            var go = GameObject.Find("UI_Dashboard_Corporativo/HUD_Operativo/Panel_Terminal_EVE");
-            if (go != null) panelTerminalRect = go.GetComponent<RectTransform>();
+            Transform t = transform.Find("HUD_Operativo/Panel_Terminal_EVE");
+            if (t != null) panelTerminalRect = t.GetComponent<RectTransform>();
         }
 
         if (panelManifiestoRect != null && panelManifiestoRect.sizeDelta.y > 34f)
@@ -741,6 +757,12 @@ public class DashboardUI : MonoBehaviour
 
     public void ActualizarBannerTurno(string texto)
     {
+        if (txtBannerTurno == null)
+        {
+            Transform tBanner = transform.Find("HUD_Operativo/Panel_Flota/Banner_Turno_Contextual/Txt_Banner");
+            if (tBanner != null) txtBannerTurno = tBanner.GetComponent<TextMeshProUGUI>();
+        }
+
         if (txtBannerTurno != null)
         {
             txtBannerTurno.text = texto;
@@ -829,6 +851,9 @@ public class DashboardUI : MonoBehaviour
 
     public void MostrarUltimoFeedbackBuzon()
     {
+        RobotManagerEVE eve = FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Include);
+        if (eve == null || !eve.turnoIniciado) return;
+
         if (historialFeedbackSupervisor.Count == 0)
         {
             MostrarPopUpEjecutivoSLA("BUZÓN DEL SUPERVISOR", "Sin reportes técnicos de rechazo pendientes.", 4.5f);

@@ -40,6 +40,11 @@ public class ModuloDespachoTMS : MonoBehaviour
     private bool reinicioConvoyEnCurso = false;
     private int camionTurnoActual = 1;
 
+    [Header("Protocolo de Inspección Humana en Muelle")]
+    public float duracionInspeccionHumana = 45f;
+    private readonly bool[] inspeccionHumanaEnCurso = new bool[4];
+    private readonly Coroutine[] rutinasInspeccionHumana = new Coroutine[4];
+
     public Stack<Pedido> MatrizLIFOCamion1 => matrizLIFOCamion1;
     public Stack<Pedido> MatrizLIFOCamion2 => matrizLIFOCamion2;
     public Stack<Pedido> MatrizLIFOCamion3 => matrizLIFOCamion3;
@@ -151,6 +156,8 @@ public class ModuloDespachoTMS : MonoBehaviour
             slotsReservados[i] = 0;
             renovacionEnCurso[i] = false;
             camionSellado[i] = false;
+            inspeccionHumanaEnCurso[i] = false;
+            rutinasInspeccionHumana[i] = null;
         }
         reinicioConvoyEnCurso = false;
         camionTurnoActual = 1;
@@ -179,12 +186,12 @@ public class ModuloDespachoTMS : MonoBehaviour
     {
         numeroCamion = 0;
 
-        // Rotación secuencial 1 -> 2 -> 3 respetando máximo 3 pallets (físicos o reservados) y camiones sellados
+        // Rotación secuencial 1 -> 2 -> 3 respetando máximo 3 pallets (físicos o reservados), sellado e inspección humana
         for (int offset = 0; offset < 3; offset++)
         {
             int candidato = ((camionTurnoActual - 1 + offset) % 3) + 1;
             int ocupados = Mathf.Max(slotsReservados[candidato], ObtenerListaPallets(candidato).Count);
-            if (!renovacionEnCurso[candidato] && !camionSellado[candidato] && ocupados < CapacidadMaximaPalletsCamion)
+            if (!renovacionEnCurso[candidato] && !camionSellado[candidato] && !inspeccionHumanaEnCurso[candidato] && ocupados < CapacidadMaximaPalletsCamion)
             {
                 numeroCamion = candidato;
                 break;
@@ -217,6 +224,63 @@ public class ModuloDespachoTMS : MonoBehaviour
         Debug.Log(logMensaje);
 
         return ObtenerTransformMuelle(numeroCamion);
+    }
+
+    public int ReportarInspeccionHumanaMuelle(int numeroCamionBloqueado, out int siguienteCamionOperativo)
+    {
+        numeroCamionBloqueado = Mathf.Clamp(numeroCamionBloqueado, 1, 3);
+        inspeccionHumanaEnCurso[numeroCamionBloqueado] = true;
+
+        if (rutinasInspeccionHumana[numeroCamionBloqueado] != null)
+        {
+            StopCoroutine(rutinasInspeccionHumana[numeroCamionBloqueado]);
+        }
+        rutinasInspeccionHumana[numeroCamionBloqueado] = StartCoroutine(AutoLiberarInspeccionHumana(numeroCamionBloqueado));
+
+        siguienteCamionOperativo = 0;
+
+        for (int offset = 1; offset <= 2; offset++)
+        {
+            int candidato = ((numeroCamionBloqueado - 1 + offset) % 3) + 1;
+            int ocupados = Mathf.Max(slotsReservados[candidato], ObtenerListaPallets(candidato).Count);
+            if (!renovacionEnCurso[candidato] && !camionSellado[candidato] && !inspeccionHumanaEnCurso[candidato] && ocupados < CapacidadMaximaPalletsCamion)
+            {
+                siguienteCamionOperativo = candidato;
+                break;
+            }
+        }
+
+        if (siguienteCamionOperativo == 0)
+        {
+            for (int offset = 1; offset <= 2; offset++)
+            {
+                int candidato = ((numeroCamionBloqueado - 1 + offset) % 3) + 1;
+                if (!inspeccionHumanaEnCurso[candidato])
+                {
+                    siguienteCamionOperativo = candidato;
+                    break;
+                }
+            }
+        }
+
+        if (siguienteCamionOperativo == 0)
+        {
+            siguienteCamionOperativo = (numeroCamionBloqueado % 3) + 1;
+        }
+
+        camionTurnoActual = siguienteCamionOperativo;
+        return siguienteCamionOperativo;
+    }
+
+    private IEnumerator AutoLiberarInspeccionHumana(int numeroCamion)
+    {
+        yield return new WaitForSeconds(Mathf.Max(1f, duracionInspeccionHumana));
+        inspeccionHumanaEnCurso[numeroCamion] = false;
+        rutinasInspeccionHumana[numeroCamion] = null;
+
+        string msgDespeje = $"<color=#10B981>[TMS - INSPECCIÓN HUMANA]:</color> Operario en piso despejó Muelle_Camion_0{numeroCamion}. Bahía habilitada nuevamente.";
+        DashboardUI.Instance?.RegistrarLog(msgDespeje);
+        Debug.Log(msgDespeje);
     }
 
     public void CancelarReservaSlot(int numeroCamion, int slotReservado)

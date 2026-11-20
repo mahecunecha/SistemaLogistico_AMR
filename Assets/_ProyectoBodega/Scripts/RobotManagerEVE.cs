@@ -5,6 +5,8 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading.Tasks;
+using UnityEngine.AI;
+using Unity.Cinemachine;
 using Debug = UnityEngine.Debug;
 
 public class RobotManagerEVE : MonoBehaviour
@@ -111,7 +113,7 @@ public class RobotManagerEVE : MonoBehaviour
 
     void Update()
     {
-        if (Input.GetKeyDown(KeyCode.O))
+        if (Input.GetKeyDown(KeyCode.O) && turnoIniciado)
         {
             InyectarObstaculoPasilloISO();
         }
@@ -177,7 +179,7 @@ public class RobotManagerEVE : MonoBehaviour
 
         // Arranque en blanco / Standby real
         gestorTMS?.ReiniciarEstadoMuelles();
-        FindFirstObjectByType<GeneradorTablaManifiesto>()?.LimpiarTablaStandby();
+        FindFirstObjectByType<GeneradorTablaManifiesto>(FindObjectsInactive.Include)?.LimpiarTablaStandby();
         DashboardUI.Instance?.ConfigurarReservaAMR02(false);
         DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(false);
 
@@ -273,7 +275,7 @@ public class RobotManagerEVE : MonoBehaviour
         palletsEnColaWMS = Mathf.Max(0, palletsEnColaWMS - 1);
         palletsCompletadosTurno++;
 
-        FindFirstObjectByType<GeneradorTablaManifiesto>()?.ActualizarResumenColaEnVivo(palletsEnColaWMS);
+        FindFirstObjectByType<GeneradorTablaManifiesto>(FindObjectsInactive.Include)?.ActualizarResumenColaEnVivo(palletsEnColaWMS);
 
         if (palletsEnColaWMS > 0)
         {
@@ -296,7 +298,7 @@ public class RobotManagerEVE : MonoBehaviour
     {
         DashboardUI.Instance?.RegistrarLog("<color=orange>[WMS]:</color> Misión abortada. Avanzando cola WMS.");
         palletsEnColaWMS = Mathf.Max(0, palletsEnColaWMS - 1);
-        FindFirstObjectByType<GeneradorTablaManifiesto>()?.ActualizarResumenColaEnVivo(palletsEnColaWMS);
+        FindFirstObjectByType<GeneradorTablaManifiesto>(FindObjectsInactive.Include)?.ActualizarResumenColaEnVivo(palletsEnColaWMS);
 
         if (palletsEnColaWMS > 0)
         {
@@ -509,7 +511,7 @@ public class RobotManagerEVE : MonoBehaviour
         }
 
         int filaSecuencial = indiceFilaManifiestoGlobal++;
-        var generadorTabla = FindFirstObjectByType<GeneradorTablaManifiesto>();
+        var generadorTabla = FindFirstObjectByType<GeneradorTablaManifiesto>(FindObjectsInactive.Include);
         if (generadorTabla != null)
         {
             filaSecuencial = generadorTabla.AsegurarFilaOperativaParaMision(filaSecuencial, pedido, palletsEnColaWMS);
@@ -743,6 +745,8 @@ public class RobotManagerEVE : MonoBehaviour
 
     public void SimularAlertaBateria20()
     {
+        if (!turnoIniciado) return;
+
         RobotAMR objetivo = BuscarAMRActivoOPisoParaSimulacion(soloEnMovimiento: false);
         if (objetivo == null)
         {
@@ -760,6 +764,8 @@ public class RobotManagerEVE : MonoBehaviour
 
     public void SimularColapsoBateria3()
     {
+        if (!turnoIniciado) return;
+
         RobotAMR[] candidatos = new RobotAMR[] { robotAMR_01, robotAMR_02, robotAMR_03 };
         RobotAMR objetivoSinCarga = null;
         RobotAMR objetivoCargado = null;
@@ -827,7 +833,7 @@ public class RobotManagerEVE : MonoBehaviour
     {
         palletsEnColaWMS = Mathf.Max(0, palletsEnColaWMS - 1);
         palletsCompletadosTurno++;
-        FindFirstObjectByType<GeneradorTablaManifiesto>()?.ActualizarResumenColaEnVivo(palletsEnColaWMS);
+        FindFirstObjectByType<GeneradorTablaManifiesto>(FindObjectsInactive.Include)?.ActualizarResumenColaEnVivo(palletsEnColaWMS);
         EjecutarColapsoYRescateInmediato(objetivo);
     }
 
@@ -977,30 +983,236 @@ public class RobotManagerEVE : MonoBehaviour
 
     public void InyectarObstaculoPasilloISO()
     {
-        if (obstaculoPasilloISO != null)
-        {
-            obstaculoPasilloISO.transform.SetParent(null, true);
-            Collider col = obstaculoPasilloISO.GetComponent<Collider>();
-            if (col != null) col.enabled = true;
+        if (!turnoIniciado) return;
 
-            RobotAMR robot = robotEjecutor != null ? robotEjecutor : robotAMR_01;
-            if (robot != null && (robot.estadoActual == RobotAMR.EstadoRobot.En_Transito || robot.estadoActual == RobotAMR.EstadoRobot.Transportando))
-            {
-                Vector3 dirFrente = robot.transform.forward;
-                Vector3 posObstaculo = robot.transform.position + dirFrente * 3.10f;
-                posObstaculo.y = 0.202f;
-
-                obstaculoPasilloISO.transform.position = posObstaculo;
-                obstaculoPasilloISO.transform.rotation = Quaternion.identity;
-            }
-
-            obstaculoPasilloISO.SetActive(true);
-            DashboardUI.Instance?.RegistrarLog("<color=#F59E0B>[STRESS TEST]:</color> Obstaculo imprevisto detectado en corredor principal.");
-        }
-        else
+        if (obstaculoPasilloISO == null)
         {
             Debug.LogWarning("[EVE]: Referencia obstaculoPasilloISO no asignada para el Stress Test.");
+            return;
         }
+
+        if ((dronMantenimiento != null && dronMantenimiento.ocupado) || despachandoDespejeISO)
+        {
+            DashboardUI.Instance?.RegistrarLog("<color=#F59E0B>[STRESS TEST ISO]:</color> Maniobra de despeje aéreo en curso. Espere a que Dron_Mantenimiento finalice.");
+            return;
+        }
+
+        RobotAMR amrEnfocadoVCam3 = ObtenerAMREnfocadoEnVCam3();
+        if (EstaEnZonaCamionRestringida(amrEnfocadoVCam3))
+        {
+            EjecutarProtocoloInspeccionHumanaMuelle(amrEnfocadoVCam3);
+            return;
+        }
+
+        RobotAMR amrObjetivo = ResolverAMRObjetivoObstaculo(out Vector3 posObstaculo, out Vector3 _);
+        if (amrObjetivo == null)
+        {
+            RobotAMR amrEnMuelle = ObtenerAMREnZonaCamionRestringida();
+            if (amrEnMuelle != null)
+            {
+                EjecutarProtocoloInspeccionHumanaMuelle(amrEnMuelle);
+                return;
+            }
+
+            string msgProtegido = "Zona de muelle o maniobra protegida — espere a que un AMR circule por el corredor principal.";
+            DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B>[STRESS TEST ISO]:</color> {msgProtegido}");
+            DashboardUI.Instance?.MostrarPopUpEjecutivoSLA("<color=#F59E0B>ZONA PROTEGIDA ISO</color>", msgProtegido, 3.5f);
+            return;
+        }
+
+        obstaculoPasilloISO.transform.SetParent(null, true);
+        Collider col = obstaculoPasilloISO.GetComponent<Collider>();
+        if (col != null) col.enabled = true;
+
+        obstaculoPasilloISO.transform.position = posObstaculo;
+        obstaculoPasilloISO.transform.rotation = Quaternion.identity;
+        obstaculoPasilloISO.SetActive(true);
+
+        DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B>[STRESS TEST]:</color> Obstaculo imprevisto detectado frente a {amrObjetivo.idRobot} en corredor principal ({posObstaculo.x:F1}, {posObstaculo.z:F1}).");
+    }
+
+    private RobotAMR ObtenerAMREnfocadoEnVCam3()
+    {
+        DirectorCinematico director = DirectorCinematico.Instance;
+        if (director == null || director.vcam3_AMR_Hombro == null || director.vcam3_AMR_Hombro.Target.TrackingTarget == null)
+        {
+            return null;
+        }
+
+        CinemachineCamera cam3 = director.vcam3_AMR_Hombro;
+        int pCam3 = cam3.Priority.Value;
+        int pCam1 = director.vcam1_Menu != null ? director.vcam1_Menu.Priority.Value : int.MinValue;
+        int pCam2 = director.vcam2_EVE != null ? director.vcam2_EVE.Priority.Value : int.MinValue;
+
+        if (pCam3 >= 10 && pCam3 >= pCam1 && pCam3 >= pCam2)
+        {
+            return cam3.Target.TrackingTarget.GetComponent<RobotAMR>();
+        }
+        return null;
+    }
+
+    private static bool EstaEnZonaCamionRestringida(RobotAMR amr)
+    {
+        if (amr == null || !amr.gameObject.activeInHierarchy) return false;
+        bool enMisionMuelle = amr.estadoActual == RobotAMR.EstadoRobot.En_Transito ||
+                              amr.estadoActual == RobotAMR.EstadoRobot.Transportando ||
+                              amr.estadoActual == RobotAMR.EstadoRobot.Entregando;
+        if (!enMisionMuelle) return false;
+
+        Vector3 dirFrente = amr.transform.forward.sqrMagnitude > 0.001f ? amr.transform.forward.normalized : Vector3.forward;
+        Vector3 posCandidata = amr.transform.position + dirFrente * 3.10f;
+        return amr.transform.position.z > -3.50f || posCandidata.z > -3.50f;
+    }
+
+    private RobotAMR ObtenerAMREnZonaCamionRestringida()
+    {
+        RobotAMR amrFoco = ObtenerAMREnfocadoEnVCam3();
+        if (EstaEnZonaCamionRestringida(amrFoco)) return amrFoco;
+
+        RobotAMR[] candidatos = new RobotAMR[] { robotEjecutor, robotAMR_01, robotAMR_02, robotAMR_03 };
+        for (int i = 0; i < candidatos.Length; i++)
+        {
+            if (EstaEnZonaCamionRestringida(candidatos[i]))
+            {
+                return candidatos[i];
+            }
+        }
+        return null;
+    }
+
+    private static int DeterminarNumeroCamionPorAMR(RobotAMR amr)
+    {
+        if (amr != null && amr.transform.position.x > 14.0f)
+        {
+            float x = amr.transform.position.x;
+            float d1 = Mathf.Abs(x - 22.68f);
+            float d2 = Mathf.Abs(x - 37.00f);
+            float d3 = Mathf.Abs(x - 51.60f);
+
+            if (d1 <= d2 && d1 <= d3) return 1;
+            if (d2 <= d3) return 2;
+            return 3;
+        }
+
+        return Mathf.Clamp(amr != null ? amr.numCamionAsignado : 1, 1, 3);
+    }
+
+    private void EjecutarProtocoloInspeccionHumanaMuelle(RobotAMR amrEnCamion)
+    {
+        int camionAfectado = DeterminarNumeroCamionPorAMR(amrEnCamion);
+        ModuloDespachoTMS tms = gestorTMS != null ? gestorTMS : ModuloDespachoTMS.Instance;
+        int siguienteCamion = (camionAfectado % 3) + 1;
+
+        if (tms != null)
+        {
+            tms.ReportarInspeccionHumanaMuelle(camionAfectado, out siguienteCamion);
+        }
+
+        string titulo = "INSPECCIÓN HUMANA EN MUELLE 0" + camionAfectado;
+        string detalle = "Zona de camión restringida para dron de soporte aéreo. Solicitud enviada al supervisor/operario en piso; nuevos pedidos redirigidos a Muelle_Camion_0" + siguienteCamion + ".";
+
+        DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B><b>[{titulo}]:</b></color> {detalle}");
+        DashboardUI.Instance?.MostrarPopUpEjecutivoSLA($"<color=#F59E0B>{titulo}</color>", detalle, 5.0f);
+        Debug.LogWarning($"[{titulo}] {detalle}");
+    }
+
+    public RobotAMR ResolverAMRObjetivoObstaculo(out Vector3 posValida, out Vector3 dirFrente)
+    {
+        posValida = Vector3.zero;
+        dirFrente = Vector3.forward;
+
+        // Prioridad 1: AMR enfocado actualmente en VCam3_AMR_Hombro si está en navegación activa
+        RobotAMR amrEnfocado = ObtenerAMREnfocadoEnVCam3();
+        if (EsPosicionSpawnObstaculoValida(amrEnfocado, out posValida, out dirFrente))
+        {
+            return amrEnfocado;
+        }
+
+        // Prioridad 2: Primer AMR activo en corredor principal [robotEjecutor, robotAMR_01, robotAMR_02, robotAMR_03]
+        RobotAMR[] candidatos = new RobotAMR[] { robotEjecutor, robotAMR_01, robotAMR_02, robotAMR_03 };
+        for (int i = 0; i < candidatos.Length; i++)
+        {
+            RobotAMR candidato = candidatos[i];
+            if (EsPosicionSpawnObstaculoValida(candidato, out posValida, out dirFrente))
+            {
+                return candidato;
+            }
+        }
+
+        return null;
+    }
+
+    private bool EsPosicionSpawnObstaculoValida(RobotAMR amr, out Vector3 posValida, out Vector3 dirFrente)
+    {
+        posValida = Vector3.zero;
+        dirFrente = Vector3.forward;
+
+        if (amr == null || !amr.gameObject.activeInHierarchy) return false;
+        if (amr.estadoActual != RobotAMR.EstadoRobot.En_Transito && amr.estadoActual != RobotAMR.EstadoRobot.Transportando)
+        {
+            return false;
+        }
+
+        dirFrente = amr.transform.forward.sqrMagnitude > 0.001f ? amr.transform.forward.normalized : Vector3.forward;
+        Vector3 posCandidata = amr.transform.position + dirFrente * 3.10f;
+
+        // Regla 1: Rechazar zona de rampas, muelles y tráilers (y sala de carga trasera)
+        if (posCandidata.z > -3.50f || amr.transform.position.z > -3.50f || posCandidata.z < RobotAMR.ZUmbralPortico)
+        {
+            return false;
+        }
+
+        // Regla 2: Rechazar proximidad a ASRS_Estante_Heroe y Base_Carga_Principal
+        if (posCandidata.x < -16.8f)
+        {
+            return false;
+        }
+
+        GameObject baseCargaObj = GameObject.Find("Base_Carga_Principal");
+        Vector3 posBaseCarga = baseCargaObj != null ? baseCargaObj.transform.position : new Vector3(-19.50f, 0f, -0.42f);
+        float distHorizontalBase = Vector2.Distance(
+            new Vector2(posCandidata.x, posCandidata.z),
+            new Vector2(posBaseCarga.x, posBaseCarga.z)
+        );
+        if (distHorizontalBase < 1.80f)
+        {
+            return false;
+        }
+
+        // Regla 3: Validación en NavMesh y volumen físico libre (Default | AMR | Pallet)
+        if (!NavMesh.SamplePosition(posCandidata, out NavMeshHit hit, 0.8f, NavMesh.AllAreas))
+        {
+            return false;
+        }
+
+        Collider[] solapados = Physics.OverlapBox(
+            hit.position + Vector3.up * 0.45f,
+            new Vector3(0.65f, 0.45f, 0.75f),
+            Quaternion.identity,
+            (1 << 0) | (1 << 6) | (1 << 7),
+            QueryTriggerInteraction.Ignore
+        );
+
+        if (solapados != null)
+        {
+            for (int i = 0; i < solapados.Length; i++)
+            {
+                Collider c = solapados[i];
+                if (c == null) continue;
+                if (obstaculoPasilloISO != null && (c.gameObject == obstaculoPasilloISO || c.transform.IsChildOf(obstaculoPasilloISO.transform)))
+                {
+                    continue;
+                }
+                if (c.name.Contains("Suelo") || c.name.Contains("Floor") || c.bounds.max.y <= hit.position.y + 0.08f)
+                {
+                    continue;
+                }
+                return false;
+            }
+        }
+
+        posValida = new Vector3(hit.position.x, 0.202f, hit.position.z);
+        return true;
     }
 
     public void GestionarObstruccionAutonomaISO(RobotAMR robotAfectado, GameObject obstaculoDetectado)
@@ -1011,6 +1223,7 @@ public class RobotManagerEVE : MonoBehaviour
 
     public void ProyectarEstresDeFlota(int nuevosPedidos = 50)
     {
+        if (!turnoIniciado) return;
         if (alertaDemandaEnCurso) return;
         alertaDemandaEnCurso = true;
 
@@ -1081,6 +1294,8 @@ public class RobotManagerEVE : MonoBehaviour
 
     public void IngestarManifiestoDesdeSO()
     {
+        if (!turnoIniciado) return;
+
         string dirInicial = Directory.Exists(Application.streamingAssetsPath)
             ? Application.streamingAssetsPath
             : Environment.GetFolderPath(Environment.SpecialFolder.Personal);
@@ -1265,7 +1480,7 @@ public class RobotManagerEVE : MonoBehaviour
             };
 
             RegistrarCoordenadasBodega(plantillaPedidosFisicos);
-            FindFirstObjectByType<GeneradorTablaManifiesto>()?.AgregarLoteAManifiesto(plantillaPedidosFisicos, nuevosPallets, palletsEnColaWMS);
+            FindFirstObjectByType<GeneradorTablaManifiesto>(FindObjectsInactive.Include)?.AgregarLoteAManifiesto(plantillaPedidosFisicos, nuevosPallets, palletsEnColaWMS);
 
             if (!flotaEscaladaDual)
             {
@@ -1304,7 +1519,7 @@ public class RobotManagerEVE : MonoBehaviour
             };
 
             RegistrarCoordenadasBodega(plantillaPedidosFisicos);
-            FindFirstObjectByType<GeneradorTablaManifiesto>()?.AgregarLoteAManifiesto(plantillaPedidosFisicos, nuevosPallets, palletsEnColaWMS);
+            FindFirstObjectByType<GeneradorTablaManifiesto>(FindObjectsInactive.Include)?.AgregarLoteAManifiesto(plantillaPedidosFisicos, nuevosPallets, palletsEnColaWMS);
 
             DashboardUI.Instance?.ConfigurarReservaAMR02(false);
             DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(true, "<color=#38BDF8>SOPORTE / RELEVO 24/7 (80% SoC)</color>");
@@ -1358,39 +1573,83 @@ public class RobotManagerEVE : MonoBehaviour
         }
     }
 
+    public bool ValidarYAutorizarReanudacionISO(RobotAMR robotAfectado, GameObject obstaculo)
+    {
+        if (robotAfectado == null) return false;
+
+        bool galiboLibre = (obstaculo == null || !obstaculo.activeInHierarchy || obstaculo.transform.position.y >= 3.00f);
+        if (!galiboLibre) return false;
+
+        Vector3 origenCast = robotAfectado.transform.position + Vector3.up * 0.55f;
+        Vector3 halfExtents = new Vector3(0.42f, 0.35f, 0.15f);
+        Vector3 dirFrente = robotAfectado.transform.forward;
+        bool carrilBloqueado = false;
+
+        RaycastHit[] hits = Physics.BoxCastAll(
+            origenCast,
+            halfExtents,
+            dirFrente,
+            robotAfectado.transform.rotation,
+            2.8f,
+            robotAfectado.capaObstaculos,
+            QueryTriggerInteraction.Ignore
+        );
+
+        if (hits != null)
+        {
+            for (int i = 0; i < hits.Length; i++)
+            {
+                Collider c = hits[i].collider;
+                if (c == null) continue;
+                if (c.transform.IsChildOf(robotAfectado.transform)) continue;
+                if (obstaculo != null && (c.gameObject == obstaculo || c.transform.IsChildOf(obstaculo.transform)))
+                {
+                    if (obstaculo.transform.position.y >= 3.00f) continue;
+                }
+                if (c.name.Contains("Suelo") || c.name.Contains("Floor") || c.bounds.max.y <= robotAfectado.transform.position.y + 0.05f)
+                {
+                    continue;
+                }
+                carrilBloqueado = true;
+                break;
+            }
+        }
+
+        if (carrilBloqueado) return false;
+
+        Debug.Log("<color=#10B981>[FLUJO]: 5. Gálibo y carril verificados por EVE. Autorizando reanudación.</color>");
+        DashboardUI.Instance?.RegistrarLog("<color=#10B981>[EVE -> " + robotAfectado.idRobot + "]</color> Gálibo vertical despejado (>3.00m). Vía libre verificada.");
+        robotAfectado.ReanudarTrasDespejeLiDAR();
+        return true;
+    }
+
     private IEnumerator ProtocoloDespejeAutonomoISO(RobotAMR robotAfectado, GameObject obstaculoDetectado)
     {
         despachandoDespejeISO = true;
 
         string idRobot = robotAfectado != null ? robotAfectado.idRobot : "AMR";
+        GameObject obstaculoObjetivo = obstaculoPasilloISO != null ? obstaculoPasilloISO : obstaculoDetectado;
         DashboardUI.Instance?.RegistrarLog($"<color=#EF4444>[ISO 3691-4 CAT. 3]:</color> Bloqueo frontal LiDAR. {idRobot} en parada de proteccion. EVE gestionando despeje...");
 
-        if (dronMantenimiento != null && obstaculoPasilloISO != null)
+        if (dronMantenimiento != null && obstaculoObjetivo != null)
         {
-            Action reanudar = () =>
+            yield return StartCoroutine(dronMantenimiento.EjecutarMisionDespeje(
+                obstaculoObjetivo,
+                () => ValidarYAutorizarReanudacionISO(robotAfectado, obstaculoObjetivo)
+            ));
+
+            if (robotAfectado != null && robotAfectado.estadoActual == RobotAMR.EstadoRobot.Interrumpido)
             {
-                Debug.Log("<color=#10B981>[FLUJO]: 5. Obstáculo despejado por EVE. Retomando Pedido 2.</color>");
-                DashboardUI.Instance?.RegistrarLog($"<color=#10B981>[WMS - VIA LIBRE]:</color> Obstaculo neutralizado por EVE. Autorizando reanudacion temprana de {idRobot}.");
-                if (robotAfectado != null)
-                {
-                    robotAfectado.ReanudarTrasDespejeLiDAR();
-                }
-            };
-            yield return StartCoroutine(dronMantenimiento.EjecutarMisionDespeje(obstaculoPasilloISO, reanudar));
+                ValidarYAutorizarReanudacionISO(robotAfectado, obstaculoObjetivo);
+            }
         }
         else
         {
-            yield return new WaitForSeconds(12.0f);
-            if (obstaculoPasilloISO != null && obstaculoPasilloISO.activeSelf)
+            if (obstaculoObjetivo != null && obstaculoObjetivo.activeSelf)
             {
-                obstaculoPasilloISO.SetActive(false);
+                obstaculoObjetivo.SetActive(false);
             }
-            Debug.Log("<color=#10B981>[FLUJO]: 5. Obstáculo despejado por EVE. Retomando Pedido 2.</color>");
-            DashboardUI.Instance?.RegistrarLog($"<color=#10B981>[WMS - VIA LIBRE]:</color> Obstaculo neutralizado por EVE. Autorizando reanudacion de {idRobot}.");
-            if (robotAfectado != null)
-            {
-                robotAfectado.ReanudarTrasDespejeLiDAR();
-            }
+            ValidarYAutorizarReanudacionISO(robotAfectado, obstaculoObjetivo);
         }
 
         despachandoDespejeISO = false;
