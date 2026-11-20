@@ -54,6 +54,25 @@ public class RobotAMR : MonoBehaviour
     private float aceleracionBase = 20.0f;
     private float coeficientePeso = 0.002f;
 
+    public float VelocidadBase => velocidadBase;
+
+    public void EstablecerVelocidadBase(float nuevaVelocidad)
+    {
+        velocidadBase = Mathf.Clamp(nuevaVelocidad, 2.0f, 5.5f);
+        if (agente != null && agente.enabled)
+        {
+            if (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando)
+            {
+                float velNominal = ObtenerVelocidadNominal();
+                agente.speed = obstaculoDetectado ? (velNominal * 0.4f) : velNominal;
+            }
+            else if (estadoActual == EstadoRobot.Recargando && !agente.isStopped)
+            {
+                agente.speed = velocidadBase;
+            }
+        }
+    }
+
     [Header("Cinemática Industrial (ISO 3691-4)")]
     public const float RadioAgenteIndustrial = 0.60f;
     public const float VelocidadAngularIndustrial = 720.0f;
@@ -95,6 +114,7 @@ public class RobotAMR : MonoBehaviour
     private bool modoDegradacionActivo = false;
     private int indiceFilaManifiesto = 0;
 
+    public bool ModoDegradacionActivo => modoDegradacionActivo;
     public Pedido PedidoActual => pedidoActual;
     [HideInInspector]
     public bool colapsoBMSArmadoPostDescarga = false;
@@ -1970,15 +1990,22 @@ public class RobotAMR : MonoBehaviour
 
     private float ObtenerVelocidadNominal()
     {
-        if (estadoActual == EstadoRobot.En_Transito)
+        float vel = velocidadBase;
+        if (estadoActual == EstadoRobot.Transportando && pedidoActual != null)
         {
-            return velocidadBase;
+            vel = Mathf.Max(0.5f, velocidadBase - (pedidoActual.peso_kg * coeficientePeso));
         }
-        else if (estadoActual == EstadoRobot.Transportando && pedidoActual != null)
+
+        if (modoDegradacionActivo)
         {
-            return Mathf.Max(0.5f, velocidadBase - (pedidoActual.peso_kg * coeficientePeso));
+            vel *= 0.5f;
         }
-        return velocidadBase;
+        else if (relevoDiferidoPostEntrega)
+        {
+            vel *= 0.65f;
+        }
+
+        return Mathf.Max(0.5f, vel);
     }
 
     private int ObtenerPrioridadVDA(RobotAMR r)
@@ -2286,6 +2313,10 @@ public class RobotAMR : MonoBehaviour
                     OnEstadoCambiado?.Invoke(estadoActual);
                     DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
                 }
+            }
+            else if (!agente.isStopped)
+            {
+                agente.speed = velocidadBase;
             }
         }
     }

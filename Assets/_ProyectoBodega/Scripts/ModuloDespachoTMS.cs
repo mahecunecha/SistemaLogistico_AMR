@@ -45,6 +45,21 @@ public class ModuloDespachoTMS : MonoBehaviour
     private readonly bool[] inspeccionHumanaEnCurso = new bool[4];
     private readonly Coroutine[] rutinasInspeccionHumana = new Coroutine[4];
 
+    [System.Serializable]
+    public struct RegistroEstibaTurno
+    {
+        public string Timestamp;
+        public int NumeroCamion;
+        public int SlotLIFO;
+        public string IdPallet;
+        public string Producto;
+        public string SKU;
+        public float PesoKg;
+    }
+
+    private readonly List<RegistroEstibaTurno> historialEstibasTurno = new List<RegistroEstibaTurno>();
+    public IReadOnlyList<RegistroEstibaTurno> HistorialEstibasTurno => historialEstibasTurno;
+
     public Stack<Pedido> MatrizLIFOCamion1 => matrizLIFOCamion1;
     public Stack<Pedido> MatrizLIFOCamion2 => matrizLIFOCamion2;
     public Stack<Pedido> MatrizLIFOCamion3 => matrizLIFOCamion3;
@@ -53,6 +68,23 @@ public class ModuloDespachoTMS : MonoBehaviour
     public float PesoCamion2 => pesoAcumuladoCamion2;
     public float PesoCamion3 => pesoAcumuladoCamion3;
     public int CamionTurnoActual => camionTurnoActual;
+
+    public int ObtenerCantidadEstibasCamion(int numeroCamion)
+    {
+        switch (numeroCamion)
+        {
+            case 1: return Mathf.Max(palletsCamion1.Count, matrizLIFOCamion1.Count);
+            case 2: return Mathf.Max(palletsCamion2.Count, matrizLIFOCamion2.Count);
+            case 3: return Mathf.Max(palletsCamion3.Count, matrizLIFOCamion3.Count);
+            default: return 0;
+        }
+    }
+
+    public bool EstaCamionSellado(int numeroCamion)
+    {
+        if (numeroCamion < 1 || numeroCamion > 3) return false;
+        return camionSellado[numeroCamion];
+    }
 
     public bool EstaEnInspeccionHumana(int numeroCamion)
     {
@@ -170,6 +202,7 @@ public class ModuloDespachoTMS : MonoBehaviour
         matrizLIFOCamion1.Clear();
         matrizLIFOCamion2.Clear();
         matrizLIFOCamion3.Clear();
+        historialEstibasTurno.Clear();
 
         pesoAcumuladoCamion1 = 0f;
         pesoAcumuladoCamion2 = 0f;
@@ -443,6 +476,21 @@ public class ModuloDespachoTMS : MonoBehaviour
 
         int estibasActuales = Mathf.Max(listaPallets.Count, pilaObjetivo.Count);
         slotsReservados[numeroCamion] = Mathf.Max(slotsReservados[numeroCamion], estibasActuales);
+
+        int slotRegistrado = slotAsignado > 0
+            ? Mathf.Clamp(slotAsignado, 1, CapacidadMaximaPalletsCamion)
+            : Mathf.Clamp(estibasActuales, 1, CapacidadMaximaPalletsCamion);
+
+        historialEstibasTurno.Add(new RegistroEstibaTurno
+        {
+            Timestamp = System.DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+            NumeroCamion = numeroCamion,
+            SlotLIFO = slotRegistrado,
+            IdPallet = !string.IsNullOrEmpty(pedido.id_pallet) ? pedido.id_pallet : "PAL-DESC",
+            Producto = !string.IsNullOrEmpty(pedido.nombre_producto) ? pedido.nombre_producto : "Carga Industrial",
+            SKU = !string.IsNullOrEmpty(pedido.codigo_sku) ? pedido.codigo_sku : "SKU-STD",
+            PesoKg = pedido.peso_kg
+        });
 
         string logMatriz = $"<color=cyan>[MATRIZ LIFO CAMIÓN {numeroCamion}]:</color> Estiba {pedido.id_pallet} apilada en Posición #{estibasActuales}/{CapacidadMaximaPalletsCamion} (Peso acumulado: {pesoAcumulado:F0} kg / {CapacidadMaximaCamionKg:F0} kg)";
         DashboardUI.Instance?.RegistrarLog(logMatriz);

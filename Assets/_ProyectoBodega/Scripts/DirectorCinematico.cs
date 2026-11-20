@@ -65,6 +65,14 @@ public class DirectorCinematico : MonoBehaviour
 
     private void Start()
     {
+        CinemachineBrain brain = Camera.main != null
+            ? Camera.main.GetComponent<CinemachineBrain>()
+            : FindFirstObjectByType<CinemachineBrain>();
+        if (brain != null)
+        {
+            brain.IgnoreTimeScale = true;
+        }
+
         SuscribirFlota(true);
         StartCoroutine(SecuenciaIntroCinematica());
     }
@@ -910,7 +918,7 @@ public class DirectorCinematico : MonoBehaviour
 
     private void ActualizarEncuadreDinamico()
     {
-        float dt = Time.deltaTime * 3.5f;
+        float dt = Time.unscaledDeltaTime * 3.5f;
 
         if (vcam3_AMR_Hombro != null)
         {
