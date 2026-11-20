@@ -108,6 +108,22 @@ public class DashboardUI : MonoBehaviour
     private Transform hudOperativoTransform;
     private bool hudOperativoEstabaActivo = false;
 
+    [Header("Destello Visual de Alertas (Módulo 4)")]
+    public Image imgFilaAMR01;
+    public Image imgFilaAMR02;
+    public Image imgFilaAMR03;
+    public Image imgPanelTerminalEVE;
+
+    private Coroutine rutinaDestelloAMR01;
+    private Coroutine rutinaDestelloAMR02;
+    private Coroutine rutinaDestelloAMR03;
+    private Coroutine rutinaDestelloTerminal;
+
+    private static readonly Color ColorBaseFilaAMR = new Color(0.12f, 0.16f, 0.22f, 0.0f);
+    private static readonly Color ColorBaseTerminalEVE = new Color(0.121568628f, 0.141176477f, 0.180392161f, 0.95f);
+    private static readonly Color ColorDestelloPreventivoFila = new Color(0.96f, 0.62f, 0.04f, 0.32f);
+    private static readonly Color ColorDestelloCriticoFila = new Color(0.94f, 0.27f, 0.27f, 0.38f);
+
     public void IniciarTurnoNocturno()
     {
         haSidoDesplegadoAMR03EnTurno = false;
@@ -152,11 +168,104 @@ public class DashboardUI : MonoBehaviour
     {
         if (panelEmergencia != null)
         {
+            bool flancoApertura = mostrar && !panelEmergencia.activeSelf;
             panelEmergencia.SetActive(mostrar);
             if (mostrar)
             {
                 ReconstruirLayoutAlertaEmergencia();
             }
+            if (flancoApertura)
+            {
+                GestorAudioSCADA.Instance?.ReproducirAlertaPreventiva();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Aplica un pulso cromático sincronizado sobre la tarjeta AMR afectada y la terminal EVE.
+    /// </summary>
+    public void DestellarAlertaUnidad(string idRobot, bool esCritica)
+    {
+        if (!Application.isPlaying || !isActiveAndEnabled) return;
+
+        AsegurarReferenciasDestello();
+
+        Color colorPicoFila = esCritica ? ColorDestelloCriticoFila : ColorDestelloPreventivoFila;
+        if (!string.IsNullOrEmpty(idRobot) && idRobot.Contains("02"))
+        {
+            ReiniciarPulsoImagen(ref rutinaDestelloAMR02, imgFilaAMR02, ColorBaseFilaAMR, colorPicoFila, 2.4f, 3);
+        }
+        else if (!string.IsNullOrEmpty(idRobot) && idRobot.Contains("03"))
+        {
+            ReiniciarPulsoImagen(ref rutinaDestelloAMR03, imgFilaAMR03, ColorBaseFilaAMR, colorPicoFila, 2.4f, 3);
+        }
+        else
+        {
+            ReiniciarPulsoImagen(ref rutinaDestelloAMR01, imgFilaAMR01, ColorBaseFilaAMR, colorPicoFila, 2.4f, 3);
+        }
+
+        Color acentoTerminal = esCritica
+            ? new Color(0.94f, 0.27f, 0.27f, 0.96f)
+            : new Color(0.96f, 0.62f, 0.04f, 0.96f);
+        Color colorPicoTerminal = Color.Lerp(ColorBaseTerminalEVE, acentoTerminal, 0.38f);
+        ReiniciarPulsoImagen(ref rutinaDestelloTerminal, imgPanelTerminalEVE, ColorBaseTerminalEVE, colorPicoTerminal, 2.4f, 3);
+    }
+
+    private void AsegurarReferenciasDestello()
+    {
+        const string rutaFlota = "HUD_Operativo/Panel_Flota/Scroll_Flota/Viewport/Content_Flota/";
+        if (imgFilaAMR01 == null)
+        {
+            Transform t = transform.Find(rutaFlota + "Fila_AMR_01");
+            if (t != null) imgFilaAMR01 = t.GetComponent<Image>();
+        }
+        if (imgFilaAMR02 == null)
+        {
+            Transform t = transform.Find(rutaFlota + "Fila_AMR_02");
+            if (t != null) imgFilaAMR02 = t.GetComponent<Image>();
+        }
+        if (imgFilaAMR03 == null)
+        {
+            Transform t = transform.Find(rutaFlota + "Fila_AMR_03");
+            if (t != null) imgFilaAMR03 = t.GetComponent<Image>();
+        }
+        if (imgPanelTerminalEVE == null)
+        {
+            Transform t = transform.Find("HUD_Operativo/Panel_Terminal_EVE");
+            if (t != null) imgPanelTerminalEVE = t.GetComponent<Image>();
+        }
+    }
+
+    private void ReiniciarPulsoImagen(ref Coroutine rutina, Image objetivo, Color colorBase, Color colorPico, float duracion, int ciclos)
+    {
+        if (objetivo == null) return;
+
+        if (rutina != null)
+        {
+            StopCoroutine(rutina);
+            rutina = null;
+        }
+        objetivo.color = colorBase;
+        rutina = StartCoroutine(PulsoCromaticoImagen(objetivo, colorBase, colorPico, duracion, ciclos));
+    }
+
+    private IEnumerator PulsoCromaticoImagen(Image objetivo, Color colorBase, Color colorPico, float duracion, int ciclos)
+    {
+        if (objetivo == null || duracion <= 0f) yield break;
+
+        float transcurrido = 0f;
+        while (transcurrido < duracion && objetivo != null)
+        {
+            transcurrido += Time.unscaledDeltaTime;
+            float tNorm = Mathf.Clamp01(transcurrido / duracion);
+            float pulso = (1f - Mathf.Cos(tNorm * Mathf.PI * 2f * ciclos)) * 0.5f;
+            objetivo.color = Color.Lerp(colorBase, colorPico, pulso);
+            yield return null;
+        }
+
+        if (objetivo != null)
+        {
+            objetivo.color = colorBase;
         }
     }
 
@@ -1253,6 +1362,10 @@ public class DashboardUI : MonoBehaviour
         goCerrar.GetComponent<Image>().color = new Color(0.18f, 0.24f, 0.34f, 1f);
         btnCerrarPopupSLA = goCerrar.GetComponent<Button>();
         btnCerrarPopupSLA.onClick.AddListener(CerrarPopUpEjecutivoSLA);
+        if (goCerrar.GetComponent<BotonClickSFX>() == null)
+        {
+            goCerrar.AddComponent<BotonClickSFX>();
+        }
 
         GameObject goCerrarTxt = new GameObject("Text (TMP)", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
         goCerrarTxt.transform.SetParent(goCerrar.transform, false);

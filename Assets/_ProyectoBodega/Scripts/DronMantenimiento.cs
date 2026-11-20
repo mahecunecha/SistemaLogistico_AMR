@@ -35,6 +35,7 @@ public class DronMantenimiento : MonoBehaviour
 
     [Header("Estado Operativo")]
     public bool ocupado = false;
+    private bool estadoLedSuccionActivo = false;
 
     void Awake()
     {
@@ -55,6 +56,7 @@ public class DronMantenimiento : MonoBehaviour
         }
 
         tieneCargaAcoplada = false;
+        estadoLedSuccionActivo = false;
         AplicarExtensionChupa(0.20f);
         ConfigurarEstadoLedSuccion(false);
     }
@@ -89,7 +91,17 @@ public class DronMantenimiento : MonoBehaviour
 
     public void ConfigurarEstadoLedSuccion(bool succionActiva)
     {
+        bool flancoVerde = succionActiva && !estadoLedSuccionActivo;
+        estadoLedSuccionActivo = succionActiva;
+
         ResolverReferenciasChupa();
+
+        if (flancoVerde && Application.isPlaying)
+        {
+            Vector3 posSuccion = campanaVentosa != null ? campanaVentosa.position : transform.position;
+            GestorAudioSCADA.Instance?.ReproducirAcopleNeumatico(posSuccion);
+        }
+
         if (rendererAnilloLed == null) return;
 
         Material matObjetivo = succionActiva ? matLedVerdeSuccion : matLedRojoReposo;
