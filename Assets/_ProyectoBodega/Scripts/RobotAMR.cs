@@ -114,6 +114,16 @@ public class RobotAMR : MonoBehaviour
     private GameObject palletActualGO;
     private GameObject stockOcultadoActual;
 
+    [Header("Alineación Visual en Rampas (Cinemática Pura)")]
+    private Transform chasisVisual;
+    private Vector3 baseChasisLocalPos;
+    private Quaternion baseChasisLocalRot = Quaternion.identity;
+    private Vector3 baseCargaLocalPos;
+    private Quaternion baseCargaLocalRot = Quaternion.identity;
+    private bool posesVisualesCacheadas = false;
+    private float pitchVisualSuave = 0f;
+    private float deltaYVisualSuave = 0f;
+
     public GameObject PalletActualGO => palletActualGO;
 
     void Awake()
@@ -130,6 +140,7 @@ public class RobotAMR : MonoBehaviour
             agente.autoBraking = true;
         }
 
+        CachearNodosVisualesChasis();
         ActualizarJerarquiaNavegacion();
     }
 
@@ -2186,6 +2197,139 @@ public class RobotAMR : MonoBehaviour
                     DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
                 }
             }
+        }
+    }
+
+    void LateUpdate()
+    {
+        ActualizarAlineacionVisualRampa();
+    }
+
+    private void CachearNodosVisualesChasis()
+    {
+        if (puntoMontajeCarga == null)
+        {
+            puntoMontajeCarga = transform.Find("Punto_Montaje_Carga");
+        }
+
+        if (chasisVisual == null)
+        {
+            Transform candidatoNombre = transform.Find("AMR-01");
+            if (candidatoNombre != null)
+            {
+                chasisVisual = candidatoNombre;
+            }
+            else
+            {
+                for (int i = 0; i < transform.childCount; i++)
+                {
+                    Transform hijo = transform.GetChild(i);
+                    if (hijo == null || hijo == puntoMontajeCarga || hijo.name.Contains("HUD")) continue;
+                    if (hijo.GetComponentInChildren<MeshRenderer>(true) != null)
+                    {
+                        chasisVisual = hijo;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (chasisVisual != null)
+        {
+            baseChasisLocalPos = chasisVisual.localPosition;
+            baseChasisLocalRot = chasisVisual.localRotation;
+        }
+        if (puntoMontajeCarga != null)
+        {
+            baseCargaLocalPos = puntoMontajeCarga.localPosition;
+            baseCargaLocalRot = puntoMontajeCarga.localRotation;
+        }
+        posesVisualesCacheadas = true;
+    }
+
+    private bool MuestrearSuperficieTransitable(Vector3 puntoMundo, out float ySuperficie, out bool esRampa)
+    {
+        ySuperficie = transform.position.y;
+        esRampa = false;
+
+        Vector3 origen = new Vector3(puntoMundo.x, transform.position.y + 1.0f, puntoMundo.z);
+        RaycastHit[] hits = Physics.RaycastAll(origen, Vector3.down, 2.5f, 1 << 0, QueryTriggerInteraction.Ignore);
+        if (hits == null || hits.Length == 0) return false;
+
+        bool encontrado = false;
+        float mejorY = float.MinValue;
+
+        for (int i = 0; i < hits.Length; i++)
+        {
+            Collider col = hits[i].collider;
+            if (col == null) continue;
+            if (col.transform == transform || col.transform.IsChildOf(transform)) continue;
+
+            string nombre = col.transform.name;
+            bool transitable = nombre.Contains("Suelo") || nombre.Contains("Rampa") || nombre.Contains("Floor");
+            if (!transitable) continue;
+
+            float yHit = hits[i].point.y;
+            if (!encontrado || yHit > mejorY)
+            {
+                mejorY = yHit;
+                esRampa = nombre.Contains("Rampa");
+                encontrado = true;
+            }
+        }
+
+        if (!encontrado) return false;
+        ySuperficie = mejorY;
+        return true;
+    }
+
+    private void ActualizarAlineacionVisualRampa()
+    {
+        if (!posesVisualesCacheadas)
+        {
+            CachearNodosVisualesChasis();
+        }
+        if (chasisVisual == null) return;
+
+        float pitchObjetivo = 0f;
+        float deltaYObjetivo = 0f;
+
+        bool enFranjaRampa = estadoActual != EstadoRobot.Extrayendo &&
+                             estadoActual != EstadoRobot.Entregando &&
+                             estadoActual != EstadoRobot.Apagado &&
+                             transform.position.z >= -4.2f &&
+                             transform.position.z <= 4.5f;
+
+        if (enFranjaRampa)
+        {
+            Vector3 frente = transform.forward;
+            bool okFront = MuestrearSuperficieTransitable(transform.position + frente * 0.45f, out float yFront, out bool rampaFront);
+            bool okBack = MuestrearSuperficieTransitable(transform.position - frente * 0.45f, out float yBack, out bool rampaBack);
+            bool okCenter = MuestrearSuperficieTransitable(transform.position, out float yCenter, out bool rampaCenter);
+
+            if (okFront && okBack && (rampaFront || rampaBack || rampaCenter || Mathf.Abs(yFront - yBack) > 0.02f))
+            {
+                pitchObjetivo = Mathf.Clamp(-Mathf.Atan2(yFront - yBack, 0.90f) * Mathf.Rad2Deg, -28f, 28f);
+                float promedioExtremos = (yFront + yBack) * 0.5f;
+                float ySuperficieRampa = okCenter ? Mathf.Max(promedioExtremos, yCenter) : promedioExtremos;
+                deltaYObjetivo = Mathf.Clamp(ySuperficieRampa - transform.position.y + 0.02f, -0.15f, 0.45f);
+            }
+        }
+
+        float factorLerp = Mathf.Clamp01(Time.deltaTime * 12f);
+        pitchVisualSuave = Mathf.Lerp(pitchVisualSuave, pitchObjetivo, factorLerp);
+        deltaYVisualSuave = Mathf.Lerp(deltaYVisualSuave, deltaYObjetivo, factorLerp);
+
+        Quaternion rotPitch = Quaternion.Euler(pitchVisualSuave, 0f, 0f);
+        Vector3 offsetVertical = new Vector3(0f, deltaYVisualSuave, 0f);
+
+        chasisVisual.localPosition = offsetVertical + (rotPitch * baseChasisLocalPos);
+        chasisVisual.localRotation = rotPitch * baseChasisLocalRot;
+
+        if (puntoMontajeCarga != null)
+        {
+            puntoMontajeCarga.localPosition = offsetVertical + (rotPitch * baseCargaLocalPos);
+            puntoMontajeCarga.localRotation = rotPitch * baseCargaLocalRot;
         }
     }
 }
