@@ -1,6 +1,7 @@
 using System;
 using UnityEngine;
 using System.IO;
+using System.Text;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -15,6 +16,12 @@ public class RobotManagerEVE : MonoBehaviour
 
     public event System.Action OnMisionEvaluada;
     public event System.Action<bool> OnPausaCambiada;
+    public event System.Action OnEstadoAdmisionJSONCambiado;
+
+    private void NotificarCambioEstadoAdmisionJSON()
+    {
+        OnEstadoAdmisionJSONCambiado?.Invoke();
+    }
 
     [Header("Waypoints de Vuelo")]
     public Transform[] waypoints;
@@ -59,10 +66,28 @@ public class RobotManagerEVE : MonoBehaviour
     public bool flotaEscaladaDual = false;
     private List<Pedido> plantillaPedidosFisicos = new List<Pedido>();
     private readonly Queue<Pedido> colaPrioritariaReasignacion = new Queue<Pedido>();
+    private readonly Queue<RobotAMR.PalletEnPasillo> colaPalletsEnPasillo = new Queue<RobotAMR.PalletEnPasillo>();
     private int indiceFilaManifiestoGlobal = 0;
     private float tiempoProximoDespachoPermitido = 0f;
     private Coroutine rutinaHeadwayDespacho;
     private const float HeadwaySalidaSalaCargaSegundos = 5.0f;
+
+    public int CantidadPalletsEnPasillo => colaPalletsEnPasillo.Count;
+
+    // Seguridad Operativa, Ley de Continuidad y Bloqueo de Admisión
+    public int contadorDescargasCriticasTurno { get; private set; } = 0;
+    public int contadorFallasHardwareTurno { get; private set; } = 0;
+    public int TotalIncidentesCriticosTurno => contadorDescargasCriticasTurno + contadorFallasHardwareTurno;
+    public bool turnoEnFaseCritica { get; private set; } = false;
+    public bool operacionDetenidaPorSeguridad { get; private set; } = false;
+    public bool admisionNuevosPedidosBloqueada { get; private set; } = false;
+    public string motivoFaseCritica { get; private set; } = string.Empty;
+    public string motivoBloqueoAdmision { get; private set; } = string.Empty;
+
+    [Header("Zona Técnica / Mantenimiento (AMR Dañados)")]
+    public Transform contenedorZonaTecnica;
+    public Transform[] slotsZonaTecnica;
+    private readonly HashSet<int> slotsTecnicosOcupados = new HashSet<int>();
 
     [Header("Trazabilidad LIFO Camión")]
     private Stack<Pedido> matrizLIFOCamion = new Stack<Pedido>();
@@ -86,6 +111,7 @@ public class RobotManagerEVE : MonoBehaviour
         public DecisionAdmisionSLA Decision;
         public int NuevosPallets;
         public int ProyeccionCola;
+        public int CupoDisponibleActual;
         public float HorasRestantes;
         public float Capacidad1AMR;
         public float Capacidad2AMRs;
@@ -113,19 +139,56 @@ public class RobotManagerEVE : MonoBehaviour
 
     public ResultadoEvaluacionSLA UltimaEvaluacionSLA { get; private set; }
 
-    [Header("Simulador de Estrés de Flota (Industria 5.0 - O(1))")]
-    public float horaTurnoActual = 1.0f;
+    // Simulador de Estrés de Flota (Industria 5.0 - O(1))
+    public float horaTurnoActual
+    {
+        get => RelojSimuladorTurno.HorasTranscurridas;
+        set => RelojSimuladorTurno.EstablecerHoraSimuladorInterno(value);
+    }
+    public bool EnCompresionTemporalActiva => false;
     private bool alertaDemandaEnCurso = false;
-    private bool enSaltoTemporal = false;
     private int indiceCicloDemoHorizonte = 0;
 
     // Control Operativo en Vivo (Módulo 5)
-    public float VelocidadFlotaActual { get; private set; } = 3.5f;
+    public const float VelocidadNominalFlota = 3.5f;
+    public float VelocidadFlotaActual => VelocidadNominalFlota;
     public bool SimulacionPausada { get; private set; } = false;
+
+    // Varianza industrial de peso por pedido (850-1250 kg, referencia 1000 kg)
+    private static readonly float[] EstratosPesoIndustrialKg = { 870f, 940f, 1000f, 1060f, 1150f, 1230f };
+    private int semillaVariacionPeso = 0;
+
+    // Eficiencia Unitaria (1 AMR) y Promedio Dual (2 AMRs)
+    public const float UmbralEficienciaSegundoAMR = 85.0f;
+    public const float UmbralEficienciaDualBuzon = 78.0f;
+    public const float TasaNominalPalletHora1AMR = 40.0f;
+    public const float DistanciaCicloReferenciaTramoM = 85.5f;
+    public const float TiempoManiobraReferenciaSeg = 6.10f;
+
+    public float EficienciaUnitariaAMR01 { get; private set; } = 100.0f;
+    public float EficienciaUnitariaAMR02 { get; private set; } = 100.0f;
+    public float EficienciaPromedioDual { get; private set; } = 100.0f;
+    public bool AlertaEficienciaDualActiva { get; private set; } = false;
+    public string UltimoDiagnosticoEficienciaDual { get; private set; } = string.Empty;
+    private bool alertaEficienciaDualReportadaEnEpisodio = false;
+    private float tiempoProximaEvaluacionEficiencia = 0f;
+
+    public static float GenerarPesoIndustrialPedido(int indiceSecuencial, int variacionJitter = 0)
+    {
+        int idx = Mathf.Abs(indiceSecuencial) % EstratosPesoIndustrialKg.Length;
+        float baseEstrato = EstratosPesoIndustrialKg[idx];
+        int hash = ((indiceSecuencial * 73) ^ (variacionJitter * 31)) & 0x7FFFFFFF;
+        float offset = ((hash % 9) - 4) * 5f; // -20 kg a +20 kg en pasos de 5 kg
+        return Mathf.Clamp(Mathf.Round((baseEstrato + offset) / 5f) * 5f, Pedido.PesoMinimoIndustrialKg, Pedido.PesoMaximoIndustrialKg);
+    }
 
     void Awake()
     {
         Instance = this;
+        if (GetComponent<RelojSimuladorTurno>() == null)
+        {
+            gameObject.AddComponent<RelojSimuladorTurno>();
+        }
         if (gestorTMS == null) gestorTMS = FindFirstObjectByType<ModuloDespachoTMS>();
         if (dronMantenimiento == null) dronMantenimiento = FindFirstObjectByType<DronMantenimiento>();
         if (robotAMR_01 == null)
@@ -159,19 +222,13 @@ public class RobotManagerEVE : MonoBehaviour
             InyectarObstaculoPasilloISO();
         }
 
-        if (turnoIniciado && !SimulacionPausada && !enSaltoTemporal && horaTurnoActual < 7.5f)
-        {
-            float deltaHoras = (Time.deltaTime * RobotAMR.FactorCompresionTurno) / 3600f;
-            horaTurnoActual = Mathf.Min(7.5f, horaTurnoActual + deltaHoras);
-        }
-
         if (Input.GetKeyDown(KeyCode.I) && turnoIniciado && !SimulacionPausada)
         {
             bool shiftPresionado = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
             if (shiftPresionado)
             {
                 float[] horasDemo = new float[] { 1.5f, 5.0f, 7.5f };
-                horaTurnoActual = horasDemo[indiceCicloDemoHorizonte];
+                RelojSimuladorTurno.EstablecerHoraSimuladorInterno(horasDemo[indiceCicloDemoHorizonte]);
                 indiceCicloDemoHorizonte = (indiceCicloDemoHorizonte + 1) % horasDemo.Length;
                 alertaDemandaEnCurso = false;
                 ProyectarEstresDeFlota(50);
@@ -184,14 +241,12 @@ public class RobotManagerEVE : MonoBehaviour
 
         if (!turnoIniciado || SimulacionPausada) return;
         MoverPorWaypoints();
-    }
 
-    public void AjustarVelocidadFlotaEnVivo(float nuevaVelocidad)
-    {
-        VelocidadFlotaActual = Mathf.Clamp(nuevaVelocidad, 2.0f, 5.5f);
-        if (robotAMR_01 != null) robotAMR_01.EstablecerVelocidadBase(VelocidadFlotaActual);
-        if (robotAMR_02 != null) robotAMR_02.EstablecerVelocidadBase(VelocidadFlotaActual);
-        if (robotAMR_03 != null) robotAMR_03.EstablecerVelocidadBase(VelocidadFlotaActual);
+        if (palletsEnColaWMS > 0 && Time.unscaledTime >= tiempoProximaEvaluacionEficiencia)
+        {
+            tiempoProximaEvaluacionEficiencia = Time.unscaledTime + 1.0f;
+            EvaluarEficienciaOperativaYEscalamiento();
+        }
     }
 
     public bool AlternarPausaSimulacion()
@@ -219,6 +274,7 @@ public class RobotManagerEVE : MonoBehaviour
         }
 
         OnPausaCambiada?.Invoke(SimulacionPausada);
+        DashboardUI.Instance?.ActualizarMarcadorNBAHud(true);
     }
 
     void OnDestroy()
@@ -235,20 +291,41 @@ public class RobotManagerEVE : MonoBehaviour
         Time.timeScale = 1f;
     }
 
+    public void ReiniciarContadoresIncidentesTurno()
+    {
+        colaPrioritariaReasignacion.Clear();
+        colaPalletsEnPasillo.Clear();
+        slotsTecnicosOcupados.Clear();
+        contadorDescargasCriticasTurno = 0;
+        contadorFallasHardwareTurno = 0;
+        turnoEnFaseCritica = false;
+        operacionDetenidaPorSeguridad = false;
+        admisionNuevosPedidosBloqueada = false;
+        motivoFaseCritica = string.Empty;
+        motivoBloqueoAdmision = string.Empty;
+        EficienciaUnitariaAMR01 = 100.0f;
+        EficienciaUnitariaAMR02 = 100.0f;
+        EficienciaPromedioDual = 100.0f;
+        AlertaEficienciaDualActiva = false;
+        alertaEficienciaDualReportadaEnEpisodio = false;
+        UltimoDiagnosticoEficienciaDual = string.Empty;
+    }
+
     public void IniciarTurno()
     {
         if (turnoIniciado) return;
         SimulacionPausada = false;
         Time.timeScale = 1f;
         turnoIniciado = true;
-        AjustarVelocidadFlotaEnVivo(VelocidadFlotaActual);
+        semillaVariacionPeso = UnityEngine.Random.Range(1, 997);
         sesionOperativaIniciada = true;
         palletsEnColaWMS = 0;
         palletsCompletadosTurno = 0;
         flotaEscaladaDual = false;
         indicePedidoActual = 0;
         indiceFilaManifiestoGlobal = 0;
-        colaPrioritariaReasignacion.Clear();
+        ReiniciarContadoresIncidentesTurno();
+        RelojSimuladorTurno.ReiniciarRelojTurno(0.0f);
         relevo24_7Activo = false;
         tiempoProximoDespachoPermitido = 0f;
         if (rutinaHeadwayDespacho != null)
@@ -256,6 +333,8 @@ public class RobotManagerEVE : MonoBehaviour
             StopCoroutine(rutinaHeadwayDespacho);
             rutinaHeadwayDespacho = null;
         }
+
+        DashboardUI.Instance?.ActualizarBannerTurno($"<b><color=#38BDF8>TURNO NOCTURNO:</color> {RelojSimuladorTurno.HoraActualFormateada} (Restan {RelojSimuladorTurno.TiempoRestanteFormateado} | Cierre {RelojSimuladorTurno.HoraCierreTurnoTexto}) | Química: <color=#F59E0B>LiFePO4</color> (80% - 20%)</b>");
 
         Debug.Log("<color=#10B981>[FLUJO]: 1. Turno iniciado en STANDBY. Esperando ingesta JSON ERP.</color>");
 
@@ -284,6 +363,7 @@ public class RobotManagerEVE : MonoBehaviour
 
         DashboardUI.Instance?.RegistrarLog("<color=green>[WMS]:</color> Turno iniciado en STANDBY. Esperando ingesta de lotes JSON ERP.");
         DashboardUI.Instance?.RegistrarLog("<color=#38BDF8>[WMS ENERGÍA]:</color> Bus Aéreo PoE++ 48V DC Activo — Disponibilidad 24/7 Garantizada.");
+        NotificarCambioEstadoAdmisionJSON();
     }
 
     void CargarManifiesto()
@@ -372,26 +452,42 @@ public class RobotManagerEVE : MonoBehaviour
 
         if (palletsEnColaWMS > 0)
         {
-            if (!enSaltoTemporal)
-            {
-                DespacharColaDisponible(robotEntregador);
-            }
+            DespacharColaDisponible(robotEntregador);
         }
         else if (ContarMisionesEnVuelo() == 0)
         {
             flotaEscaladaDual = false;
             DashboardUI.Instance?.ConfigurarReservaAMR02(false);
             DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(false);
-            DashboardUI.Instance?.RegistrarLog("<color=green>[WMS]:</color> Cola WMS completada. Unidades en espera de nuevas órdenes ERP.");
-            Debug.Log("<color=green>[WMS]:</color> Cola WMS completada. Unidades en espera de nuevas órdenes ERP.");
+            string msgColaFin = admisionNuevosPedidosBloqueada
+                ? "<color=#F59E0B>[WMS CONTINUIDAD]:</color> Cola asignada completada. Admisión de pedidos nuevos bloqueada por pérdida de soporte/flota degradada."
+                : "<color=green>[WMS]:</color> Cola WMS completada. Unidades en espera de nuevas órdenes ERP.";
+            DashboardUI.Instance?.RegistrarLog(msgColaFin);
+            Debug.Log(msgColaFin);
         }
+
+        EvaluarEficienciaOperativaYEscalamiento(null, permitirDespachoInmediato: false);
+        NotificarCambioEstadoAdmisionJSON();
+    }
+
+    public void RegistrarPalletAbandonadoPorAborto(Pedido pedido, RobotAMR.PalletEnPasillo paquete)
+    {
+        EncolarCargaDeUnidadCaida(pedido, paquete);
     }
 
     public void NotificarMisionAbortada()
     {
+        NotificarMisionAbortada(false);
+    }
+
+    public void NotificarMisionAbortada(bool conservarEnCola)
+    {
         DashboardUI.Instance?.RegistrarLog("<color=orange>[WMS]:</color> Misión abortada. Avanzando cola WMS.");
-        palletsEnColaWMS = Mathf.Max(0, palletsEnColaWMS - 1);
-        FindFirstObjectByType<GeneradorTablaManifiesto>(FindObjectsInactive.Include)?.ActualizarResumenColaEnVivo(palletsEnColaWMS);
+        if (!conservarEnCola)
+        {
+            palletsEnColaWMS = Mathf.Max(0, palletsEnColaWMS - 1);
+            FindFirstObjectByType<GeneradorTablaManifiesto>(FindObjectsInactive.Include)?.ActualizarResumenColaEnVivo(palletsEnColaWMS);
+        }
 
         if (palletsEnColaWMS > 0)
         {
@@ -404,6 +500,8 @@ public class RobotManagerEVE : MonoBehaviour
             DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(false);
             DashboardUI.Instance?.RegistrarLog("<color=green>[WMS]:</color> Cola WMS completada (Con Reprogramaciones). Unidades en espera de nuevas órdenes ERP.");
         }
+
+        NotificarCambioEstadoAdmisionJSON();
     }
 
     private void FinalizarTurnoYRetornarACarga(string mensajeCierre)
@@ -418,19 +516,18 @@ public class RobotManagerEVE : MonoBehaviour
         Debug.Log(mensajeCierre);
         DashboardUI.Instance?.RegistrarLog(mensajeCierre);
 
-        if (robotEjecutor != null && robotEjecutor.estadoActual != RobotAMR.EstadoRobot.Recargando)
+        RobotAMR[] flota = new RobotAMR[] { robotAMR_01, robotAMR_02, robotAMR_03 };
+        for (int i = 0; i < flota.Length; i++)
         {
-            bool esUnidad02 = (robotEjecutor == robotAMR_02) ||
-                              (!string.IsNullOrEmpty(robotEjecutor.idRobot) && robotEjecutor.idRobot.EndsWith("02"));
-            string nombrePad = esUnidad02 ? "Pad_Inductivo_02" : "Pad_Inductivo_01";
-            Vector3 posPadFallback = esUnidad02 ? new Vector3(38.13f, 0.25886f, -54.66f) : new Vector3(28.86f, 0.25886f, -54.91f);
-
-            GameObject goPad = GameObject.Find(nombrePad);
-            Vector3 destinoPad = goPad != null ? goPad.transform.position : posPadFallback;
-            robotEjecutor.EnviarACargaInductiva(destinoPad);
+            RobotAMR r = flota[i];
+            if (r != null && r.EsRecuperableEnTurno && r.estadoActual != RobotAMR.EstadoRobot.Recargando && r.estadoActual != RobotAMR.EstadoRobot.Apagado)
+            {
+                r.EnviarACargaInductiva(ObtenerPosicionPadPorUnidad(r));
+            }
         }
 
         DirectorCinematico.Instance?.ActivarVistaGeneralFinDeTurno();
+        NotificarCambioEstadoAdmisionJSON();
     }
 
     private int ContarMisionesEnVuelo()
@@ -454,17 +551,24 @@ public class RobotManagerEVE : MonoBehaviour
 
     private int ObtenerCuposMaximosPiso()
     {
-        return flotaEscaladaDual ? 2 : 1;
+        ObtenerEstadoFlotaReal(out int operativosPiso, out bool tieneSoporteDedicado);
+        if (operativosPiso <= 0) return 0;
+        int deseados = (flotaEscaladaDual || (!tieneSoporteDedicado && palletsEnColaWMS > 1)) ? 2 : 1;
+        return Mathf.Clamp(deseados, 1, operativosPiso);
     }
 
     private void DespacharColaDisponible(RobotAMR robotPreferido = null)
     {
-        if (plantillaPedidosFisicos == null || plantillaPedidosFisicos.Count == 0) return;
+        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica) return;
         if (palletsEnColaWMS <= 0) return;
+        if (colaPalletsEnPasillo.Count == 0 && colaPrioritariaReasignacion.Count == 0 &&
+            (plantillaPedidosFisicos == null || plantillaPedidosFisicos.Count == 0))
+        {
+            return;
+        }
 
         int iteracionesSeguridad = 4;
-        int cuposMaximos = ObtenerCuposMaximosPiso();
-        while (palletsEnColaWMS > ContarMisionesEnVuelo() && ContarMisionesEnVuelo() < cuposMaximos && iteracionesSeguridad-- > 0)
+        while (palletsEnColaWMS > ContarMisionesEnVuelo() && ContarMisionesEnVuelo() < ObtenerCuposMaximosPiso() && iteracionesSeguridad-- > 0)
         {
             RobotAMR objetivo = SeleccionarSiguienteRobotLibre(robotPreferido);
             robotPreferido = null;
@@ -495,7 +599,7 @@ public class RobotManagerEVE : MonoBehaviour
             yield return null;
         }
         rutinaHeadwayDespacho = null;
-        if (!enSaltoTemporal && palletsEnColaWMS > 0)
+        if (!operacionDetenidaPorSeguridad && !turnoEnFaseCritica && palletsEnColaWMS > 0)
         {
             DespacharColaDisponible();
         }
@@ -503,7 +607,7 @@ public class RobotManagerEVE : MonoBehaviour
 
     private RobotAMR SeleccionarSiguienteRobotLibre(RobotAMR preferido)
     {
-        if (preferido != null && preferido.estadoActual == RobotAMR.EstadoRobot.Inactivo)
+        if (preferido != null && preferido.EsRecuperableEnTurno && preferido.estadoActual == RobotAMR.EstadoRobot.Inactivo)
         {
             if (flotaEscaladaDual) return preferido;
             if (relevo24_7Activo && preferido == robotAMR_02) return preferido;
@@ -512,9 +616,9 @@ public class RobotManagerEVE : MonoBehaviour
 
         if (flotaEscaladaDual)
         {
-            if (robotAMR_01 != null && robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Inactivo) return robotAMR_01;
-            if (robotAMR_02 != null && robotAMR_02.estadoActual == RobotAMR.EstadoRobot.Inactivo) return robotAMR_02;
-            if (robotAMR_03 != null && robotAMR_03.estadoActual == RobotAMR.EstadoRobot.Inactivo)
+            if (robotAMR_01 != null && robotAMR_01.EsRecuperableEnTurno && robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Inactivo) return robotAMR_01;
+            if (robotAMR_02 != null && robotAMR_02.EsRecuperableEnTurno && robotAMR_02.estadoActual == RobotAMR.EstadoRobot.Inactivo) return robotAMR_02;
+            if (robotAMR_03 != null && robotAMR_03.EsRecuperableEnTurno && robotAMR_03.estadoActual == RobotAMR.EstadoRobot.Inactivo)
             {
                 DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(true);
                 return robotAMR_03;
@@ -522,26 +626,31 @@ public class RobotManagerEVE : MonoBehaviour
             return null;
         }
 
-        RobotAMR ejecutorActual = (relevo24_7Activo && robotAMR_02 != null)
+        RobotAMR ejecutorActual = (relevo24_7Activo && robotAMR_02 != null && robotAMR_02.EsRecuperableEnTurno)
             ? robotAMR_02
-            : (robotAMR_01 != null ? robotAMR_01 : robotEjecutor);
+            : ((robotAMR_01 != null && robotAMR_01.EsRecuperableEnTurno) ? robotAMR_01 : robotEjecutor);
 
-        if (ejecutorActual != null && ejecutorActual.estadoActual == RobotAMR.EstadoRobot.Inactivo)
+        if (ejecutorActual != null && ejecutorActual.EsRecuperableEnTurno && ejecutorActual.estadoActual == RobotAMR.EstadoRobot.Inactivo)
         {
             return ejecutorActual;
         }
 
-        if (robotAMR_02 != null && robotAMR_02.estadoActual == RobotAMR.EstadoRobot.Inactivo &&
-            (robotAMR_01 == null || robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Recargando || robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Apagado))
+        if (robotAMR_02 != null && robotAMR_02.EsRecuperableEnTurno && robotAMR_02.estadoActual == RobotAMR.EstadoRobot.Inactivo &&
+            (robotAMR_01 == null || !robotAMR_01.EsRecuperableEnTurno || robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Recargando || robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Apagado || robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Interrumpido))
         {
             return robotAMR_02;
         }
 
-        if (robotAMR_03 != null && robotAMR_03.estadoActual == RobotAMR.EstadoRobot.Inactivo &&
-            (robotAMR_01 == null || robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Recargando || robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Apagado || robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Interrumpido))
+        if (robotAMR_03 != null && robotAMR_03.EsRecuperableEnTurno && robotAMR_03.estadoActual == RobotAMR.EstadoRobot.Inactivo &&
+            (robotAMR_01 == null || !robotAMR_01.EsRecuperableEnTurno || robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Recargando || robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Apagado || robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Interrumpido))
         {
             DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(true);
             return robotAMR_03;
+        }
+
+        if (robotAMR_01 != null && robotAMR_01.EsRecuperableEnTurno && robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Inactivo)
+        {
+            return robotAMR_01;
         }
 
         return null;
@@ -549,25 +658,109 @@ public class RobotManagerEVE : MonoBehaviour
 
     private bool DespacharPedidoARobot(RobotAMR robot)
     {
-        if (robot == null || plantillaPedidosFisicos == null || plantillaPedidosFisicos.Count == 0) return false;
-        if (robot.estadoActual != RobotAMR.EstadoRobot.Inactivo) return false;
+        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica) return false;
+        if (robot == null || !robot.EsRecuperableEnTurno || robot.estadoActual != RobotAMR.EstadoRobot.Inactivo) return false;
+
+        if (colaPalletsEnPasillo.Count > 0)
+        {
+            RobotAMR.PalletEnPasillo paquete = colaPalletsEnPasillo.Peek();
+            if (DespacharRecoleccionPalletEnPasillo(robot, paquete))
+            {
+                colaPalletsEnPasillo.Dequeue();
+                return true;
+            }
+            return false;
+        }
 
         bool desdeColaReasignacion = colaPrioritariaReasignacion.Count > 0;
-        Pedido pedido = desdeColaReasignacion
-            ? colaPrioritariaReasignacion.Dequeue()
-            : plantillaPedidosFisicos[Mathf.Abs(indicePedidoActual) % plantillaPedidosFisicos.Count];
+        if (!desdeColaReasignacion && (plantillaPedidosFisicos == null || plantillaPedidosFisicos.Count == 0))
+        {
+            return false;
+        }
+
+        Pedido pedido;
+        if (desdeColaReasignacion)
+        {
+            pedido = colaPrioritariaReasignacion.Peek();
+            if (pedido != null && pedido.peso_kg <= 0f)
+            {
+                pedido.peso_kg = Pedido.PesoReferenciaBaseKg;
+            }
+        }
+        else
+        {
+            Pedido plantilla = plantillaPedidosFisicos[Mathf.Abs(indicePedidoActual) % plantillaPedidosFisicos.Count];
+            float pesoAsignado = GenerarPesoIndustrialPedido(indicePedidoActual, semillaVariacionPeso);
+            string idPallet = $"PAL-{8491 + indicePedidoActual}";
+            pedido = plantilla != null
+                ? plantilla.ClonarConPeso(pesoAsignado, idPallet)
+                : new Pedido
+                {
+                    id_pallet = idPallet,
+                    nombre_producto = "Carga Industrial",
+                    codigo_sku = "SKU-STD",
+                    peso_kg = pesoAsignado,
+                    coordenada_bodega = "P1-C1-F1"
+                };
+        }
 
         bool ok = DespacharPedidoEspecificoARobot(robot, pedido);
-        if (ok && !desdeColaReasignacion)
+        if (ok)
         {
-            indicePedidoActual++;
+            if (desdeColaReasignacion)
+            {
+                colaPrioritariaReasignacion.Dequeue();
+            }
+            else
+            {
+                indicePedidoActual++;
+            }
+
+            EvaluarEficienciaOperativaYEscalamiento(pedido, permitirDespachoInmediato: false);
+        }
+        return ok;
+    }
+
+    private bool DespacharRecoleccionPalletEnPasillo(RobotAMR robot, RobotAMR.PalletEnPasillo paquete)
+    {
+        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica) return false;
+        if (robot == null || paquete == null || paquete.pedido == null) return false;
+        if (!robot.EsRecuperableEnTurno || robot.estadoActual != RobotAMR.EstadoRobot.Inactivo) return false;
+
+        if (robot.transform.position.z < RobotAMR.ZUmbralPortico)
+        {
+            tiempoProximoDespachoPermitido = Time.time + HeadwaySalidaSalaCargaSegundos;
+        }
+
+        if (robot == robotAMR_03)
+        {
+            DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(true);
+        }
+
+        int filaSecuencial = paquete.indiceFilaManifiesto;
+        if (filaSecuencial < 0)
+        {
+            filaSecuencial = indiceFilaManifiestoGlobal++;
+            var generadorTabla = FindFirstObjectByType<GeneradorTablaManifiesto>(FindObjectsInactive.Include);
+            if (generadorTabla != null)
+            {
+                filaSecuencial = generadorTabla.AsegurarFilaOperativaParaMision(filaSecuencial, paquete.pedido, palletsEnColaWMS);
+            }
+        }
+
+        bool ok = robot.AsignarMisionRecoleccionPasillo(paquete, filaSecuencial);
+        if (ok)
+        {
+            robotEjecutor = robot;
+            OnMisionEvaluada?.Invoke();
         }
         return ok;
     }
 
     private bool DespacharPedidoEspecificoARobot(RobotAMR robot, Pedido pedido)
     {
-        if (robot == null || pedido == null) return false;
+        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica) return false;
+        if (robot == null || pedido == null || !robot.EsRecuperableEnTurno) return false;
         if (robot.estadoActual != RobotAMR.EstadoRobot.Inactivo) return false;
 
         if (robot.transform.position.z < RobotAMR.ZUmbralPortico)
@@ -596,6 +789,10 @@ public class RobotManagerEVE : MonoBehaviour
         if (gestorTMS != null)
         {
             Transform muelleDestino = gestorTMS.ConsultarMuelleDestino(pedido, out numCamion, out slot);
+            if (muelleDestino == null)
+            {
+                return false;
+            }
             robot.zonaTransferencia = muelleDestino;
             robot.numCamionAsignado = numCamion;
             robot.slotLIFOAsignado = slot;
@@ -620,6 +817,58 @@ public class RobotManagerEVE : MonoBehaviour
         OnMisionEvaluada?.Invoke();
         robot.AsignarMision(pedido, destino, filaSecuencial);
         return true;
+    }
+
+    public Vector3 ObtenerSiguienteSlotZonaTecnica(RobotAMR amr)
+    {
+        Vector3[] fallbacks = new Vector3[]
+        {
+            new Vector3(-34.50f, 0.25886f, -40.50f),
+            new Vector3(-32.00f, 0.25886f, -40.50f),
+            new Vector3(-29.50f, 0.25886f, -40.50f)
+        };
+
+        int indicePreferido = 0;
+        if (amr != null)
+        {
+            if (amr == robotAMR_03 || (!string.IsNullOrEmpty(amr.idRobot) && amr.idRobot.EndsWith("03")) || amr.gameObject.name.Contains("03"))
+            {
+                indicePreferido = 2;
+            }
+            else if (amr == robotAMR_02 || (!string.IsNullOrEmpty(amr.idRobot) && amr.idRobot.EndsWith("02")) || amr.gameObject.name.Contains("02"))
+            {
+                indicePreferido = 1;
+            }
+        }
+
+        int indiceElegido = indicePreferido;
+        if (slotsTecnicosOcupados.Contains(indiceElegido))
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                if (!slotsTecnicosOcupados.Contains(i))
+                {
+                    indiceElegido = i;
+                    break;
+                }
+            }
+        }
+        slotsTecnicosOcupados.Add(indiceElegido);
+
+        if (slotsZonaTecnica != null && indiceElegido >= 0 && indiceElegido < slotsZonaTecnica.Length && slotsZonaTecnica[indiceElegido] != null)
+        {
+            Vector3 p = slotsZonaTecnica[indiceElegido].position;
+            return new Vector3(p.x, 0.25886f, p.z);
+        }
+
+        GameObject goSlot = GameObject.Find($"Slot_Tecnico_0{indiceElegido + 1}");
+        if (goSlot != null)
+        {
+            Vector3 p = goSlot.transform.position;
+            return new Vector3(p.x, 0.25886f, p.z);
+        }
+
+        return fallbacks[Mathf.Clamp(indiceElegido, 0, fallbacks.Length - 1)];
     }
 
     public Vector3 ObtenerPosicionPadPorUnidad(RobotAMR amr)
@@ -655,64 +904,6 @@ public class RobotManagerEVE : MonoBehaviour
             return new Vector3(p.x, 0.25886f, p.z);
         }
         return fallback;
-    }
-
-    private IEnumerator SecuenciaSaltoTemporal()
-    {
-        enSaltoTemporal = true;
-        OnMisionEvaluada?.Invoke();
-        Debug.Log("<color=#10B981>[FLUJO]: 2. Pedido 1 Entregado. Iniciando Time-Lapse Logístico (7 horas).</color>");
-        DashboardUI.Instance?.RegistrarLog("<color=#F59E0B><b>[TIME-LAPSE LOGÍSTICO]:</b> Avanzando 7 horas de turno continuo (00:30 AM -> 05:30 AM). Simulando fatiga de flota...</color>");
-
-        float duracion = 3.5f;
-        DirectorCinematico.Instance?.EjecutarBarridoTimeLapse(duracion);
-        DashboardUI.Instance?.MostrarOverlayTimeLapse(true);
-        DashboardUI.Instance?.ActualizarProgresoTimeLapse(0f);
-
-        RobotAMR amr = robotAMR_01 != null ? robotAMR_01 : robotEjecutor;
-        if (amr != null)
-        {
-            float bateriaInicial = amr.bateriaActual;
-            float bateriaObjetivo = 21.93f;
-            float tiempo = 0f;
-
-            while (tiempo < duracion)
-            {
-                tiempo += Time.deltaTime;
-                float t = Mathf.Clamp01(tiempo / duracion);
-                horaTurnoActual = Mathf.Lerp(1.0f, 7.5f, t);
-                amr.bateriaActual = Mathf.Lerp(bateriaInicial, bateriaObjetivo, t);
-                DashboardUI.Instance?.ActualizarBateria(amr.idRobot, amr.bateriaActual / 100f, amr.estadoActual);
-                DashboardUI.Instance?.ActualizarProgresoTimeLapse(t);
-                yield return null;
-            }
-
-            amr.bateriaActual = bateriaObjetivo;
-            DashboardUI.Instance?.ActualizarBateria(amr.idRobot, amr.bateriaActual / 100f, amr.estadoActual);
-        }
-        else
-        {
-            float tiempo = 0f;
-            while (tiempo < duracion)
-            {
-                tiempo += Time.deltaTime;
-                float t = Mathf.Clamp01(tiempo / duracion);
-                horaTurnoActual = Mathf.Lerp(1.0f, 7.5f, t);
-                DashboardUI.Instance?.ActualizarProgresoTimeLapse(t);
-                yield return null;
-            }
-        }
-
-        horaTurnoActual = 7.5f;
-        enSaltoTemporal = false;
-        DashboardUI.Instance?.ActualizarProgresoTimeLapse(1f);
-        DashboardUI.Instance?.ActualizarBannerTurno("<b><color=#38BDF8>TURNO NOCTURNO:</color> Hora 7.5/8 (Bloque Final) | Química: <color=#F59E0B>LiFePO4</color> (80% - 20%)</b>");
-
-        yield return new WaitForSeconds(0.5f);
-        DashboardUI.Instance?.MostrarOverlayTimeLapse(false);
-
-        Debug.Log("<color=#10B981>[FLUJO]: 3. Time-Lapse completado. Continuando despacho de Cola WMS.</color>");
-        DespacharColaDisponible();
     }
 
     public void AutorizarOverrideBateria()
@@ -760,16 +951,16 @@ public class RobotManagerEVE : MonoBehaviour
                             : (robotAMR_01 != null ? robotAMR_01 : robotEjecutor)))));
 
         RobotAMR robotRelevo = null;
-        if (robotAMR_02 != null && robotAMR_02 != robotSaliente && robotAMR_02.estadoActual == RobotAMR.EstadoRobot.Inactivo)
+        if (robotAMR_02 != null && robotAMR_02 != robotSaliente && robotAMR_02.EsRecuperableEnTurno && robotAMR_02.estadoActual == RobotAMR.EstadoRobot.Inactivo)
         {
             robotRelevo = robotAMR_02;
         }
-        else if (robotAMR_03 != null && robotAMR_03 != robotSaliente && robotAMR_03.estadoActual == RobotAMR.EstadoRobot.Inactivo)
+        else if (robotAMR_03 != null && robotAMR_03 != robotSaliente && robotAMR_03.EsRecuperableEnTurno && robotAMR_03.estadoActual == RobotAMR.EstadoRobot.Inactivo)
         {
             robotRelevo = robotAMR_03;
             DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(true);
         }
-        else if (robotAMR_01 != null && robotAMR_01 != robotSaliente && robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Inactivo)
+        else if (robotAMR_01 != null && robotAMR_01 != robotSaliente && robotAMR_01.EsRecuperableEnTurno && robotAMR_01.estadoActual == RobotAMR.EstadoRobot.Inactivo)
         {
             robotRelevo = robotAMR_01;
         }
@@ -801,19 +992,19 @@ public class RobotManagerEVE : MonoBehaviour
             // Caso A: El AMR aún NO tiene pallet físico encima -> Desviar inmediatamente a recargar
             Pedido pedidoInterrumpido = robotSaliente != null ? robotSaliente.PedidoActual : null;
 
-            if (robotSaliente != null && robotSaliente != robotRelevo)
-            {
-                robotSaliente.enPausaPreventivaBateria20 = false;
-                Vector3 destinoPad = ObtenerPosicionPadPorUnidad(robotSaliente);
-                robotSaliente.EnviarACargaInductiva(destinoPad);
-            }
-
             if (robotRelevo != null)
             {
                 DirectorCinematico.Instance?.RelevarRobotActivo(robotRelevo);
                 DirectorCinematico.Instance?.LiberarFocoIncidente(robotRelevo);
                 relevo24_7Activo = (robotRelevo == robotAMR_02);
                 robotEjecutor = robotRelevo;
+
+                if (robotSaliente != null && robotSaliente != robotRelevo)
+                {
+                    robotSaliente.enPausaPreventivaBateria20 = false;
+                    Vector3 destinoPad = ObtenerPosicionPadPorUnidad(robotSaliente);
+                    robotSaliente.EnviarACargaInductiva(destinoPad);
+                }
 
                 Pedido pedidoPendiente = pedidoInterrumpido;
                 if (pedidoPendiente == null && plantillaPedidosFisicos != null && plantillaPedidosFisicos.Count > 0)
@@ -826,6 +1017,17 @@ public class RobotManagerEVE : MonoBehaviour
                 {
                     DespacharPedidoEspecificoARobot(robotRelevo, pedidoPendiente);
                 }
+            }
+            else if (robotSaliente != null)
+            {
+                // Sin soporte disponible: los AMRs restantes continúan operando bajo el 20% en modo continuidad
+                if (!admisionNuevosPedidosBloqueada)
+                {
+                    ActivarBloqueoAdmisionNuevosPedidos($"Sin unidad de soporte libre durante alerta <20% de {robotSaliente.idRobot}");
+                }
+                robotSaliente.EjecutarOverride();
+                DirectorCinematico.Instance?.LiberarFocoIncidente(robotSaliente);
+                DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B>[MODO CONTINUIDAD — SIN SOPORTE]:</color> No hay relevo libre. {robotSaliente.idRobot} continúa misión por debajo del 20% (hasta escalón 6%/3%).");
             }
             else
             {
@@ -861,71 +1063,171 @@ public class RobotManagerEVE : MonoBehaviour
         DashboardUI.Instance?.MostrarEmergencia(true, 18.9f, 3.2f);
     }
 
+    public void SimularAlertaCritica6()
+    {
+        if (!turnoIniciado) return;
+        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica)
+        {
+            DashboardUI.Instance?.RegistrarLog("<color=#EF4444>[FASE CRÍTICA]:</color> Turno detenido por seguridad. Simulación de escalón 6% bloqueada.");
+            return;
+        }
+
+        RobotAMR objetivo = BuscarAMRActivoOPisoParaSimulacion(soloEnMovimiento: true, preferirEnCorredor: true);
+        if (objetivo == null)
+        {
+            DashboardUI.Instance?.RegistrarLog("<color=orange>[SIMULACIÓN SCADA <=6%]:</color> No hay AMRs operativos disponibles en escena.");
+            return;
+        }
+
+        objetivo.bateriaActual = 5.4f;
+        objetivo.escalon6Evaluado = false;
+        DashboardUI.Instance?.ActualizarBateria(objetivo.idRobot, objetivo.bateriaActual / 100f, objetivo.estadoActual);
+        ProcesarEscalonCritico6(objetivo);
+    }
+
+    public void ProcesarEscalonCritico6(RobotAMR objetivo)
+    {
+        if (objetivo == null || !objetivo.EsRecuperableEnTurno || objetivo.estadoActual == RobotAMR.EstadoRobot.Apagado)
+        {
+            return;
+        }
+
+        bool viable = objetivo.EvaluarYActuarEscalon6(out string diagnostico);
+        if (viable)
+        {
+            DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B><b>[ESCALÓN 6% BMS - {objetivo.idRobot}]:</b></color> {diagnostico}");
+            DashboardUI.Instance?.MostrarPopUpEjecutivoSLA($"<color=#F59E0B>ESCALÓN 6% ({objetivo.idRobot})</color>", diagnostico, 4.0f);
+            DashboardUI.Instance?.DestellarAlertaUnidad(objetivo.idRobot, false);
+            if (!objetivo.TieneCargaFisica && !operacionDetenidaPorSeguridad && !turnoEnFaseCritica && palletsEnColaWMS > 0)
+            {
+                DespacharColaDisponible();
+            }
+        }
+        else
+        {
+            DashboardUI.Instance?.RegistrarLog($"<color=#EF4444><b>[ESCALÓN 6% -> CORTE 3% ({objetivo.idRobot})]:</b></color> {diagnostico}");
+            EjecutarColapsoYRescateInmediato(objetivo);
+        }
+    }
+
     public void SimularColapsoBateria3()
     {
         if (!turnoIniciado) return;
-
-        RobotAMR[] candidatos = new RobotAMR[] { robotAMR_01, robotAMR_02, robotAMR_03 };
-        RobotAMR objetivoSinCarga = null;
-        RobotAMR objetivoCargado = null;
-
-        // Caso A (Inmediato): AMR activo en tránsito sin estiba a bordo
-        for (int i = 0; i < candidatos.Length; i++)
+        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica)
         {
-            RobotAMR r = candidatos[i];
-            if (r == null) continue;
-            if (EstaEnMisionActiva(r) && !r.TieneCargaFisica && !r.colapsoBMSArmadoPostDescarga)
+            DashboardUI.Instance?.RegistrarLog("<color=#EF4444>[FASE CRÍTICA]:</color> Turno detenido por seguridad. Despachos bloqueados.");
+            return;
+        }
+
+        RobotAMR objetivo = BuscarAMRActivoOPisoParaSimulacion(soloEnMovimiento: true, preferirEnCorredor: true);
+        if (objetivo == null)
+        {
+            DashboardUI.Instance?.RegistrarLog("<color=orange>[SIMULACIÓN SCADA <=3%]:</color> No hay AMRs disponibles en escena.");
+            return;
+        }
+
+        EjecutarColapsoYRescateInmediato(objetivo);
+    }
+
+    public void SimularFallaHardwareAMR()
+    {
+        if (!turnoIniciado) return;
+        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica)
+        {
+            DashboardUI.Instance?.RegistrarLog("<color=#EF4444>[FASE CRÍTICA]:</color> Turno detenido por seguridad.");
+            return;
+        }
+
+        RobotAMR objetivo = BuscarAMRActivoOPisoParaSimulacion(soloEnMovimiento: false, preferirEnCorredor: true);
+        if (objetivo == null)
+        {
+            DashboardUI.Instance?.RegistrarLog("<color=orange>[SIMULACIÓN SCADA HW]:</color> No hay AMRs recuperables disponibles en escena.");
+            return;
+        }
+
+        ReportarFallaHardwareAMR(objetivo);
+    }
+
+    public void ReportarFallaHardwareAMR(RobotAMR objetivo)
+    {
+        if (objetivo == null || objetivo.estadoActual == RobotAMR.EstadoRobot.FueraDeServicio_Danado) return;
+
+        bool enZonaCamion = objetivo.EstaEnZonaCamionORampa();
+        int camionAfectado = enZonaCamion ? DeterminarNumeroCamionPorAMR(objetivo) : 0;
+
+        Pedido pedidoHuerfano = objetivo.ForzarFallaHardwareIrrecuperable(out RobotAMR.PalletEnPasillo palletDepositado);
+        EncolarCargaDeUnidadCaida(pedidoHuerfano, enZonaCamion ? null : palletDepositado);
+
+        string contextoZona = enZonaCamion
+            ? $"dentro de Muelle_Camion_0{camionAfectado} (bahía clausurada; intervención humana requerida)"
+            : (objetivo.transform.position.z <= -2.64f
+                ? "en pasillo. Desplegando Dron de Mantenimiento hacia Zona Técnica"
+                : "en zona de transición; requiere despeje humano");
+
+        string msgHardware = $"[RAMA B - AMR DAÑADO]: {objetivo.idRobot} presenta falla de hardware irrecuperable {contextoZona}.";
+        DashboardUI.Instance?.RegistrarLog($"<color=#DC2626><b>{msgHardware}</b></color>");
+        DashboardUI.Instance?.MostrarPopUpEjecutivoSLA(
+            "<color=#DC2626>AMR DAÑADO — FUERA DE SERVICIO</color>",
+            $"{objetivo.idRobot} fuera de servicio durante el turno ({contextoZona}).",
+            5.0f
+        );
+
+        GestorAudioSCADA.Instance?.ActivarAlarmaSonoraFabrica($"Falla HW de {objetivo.idRobot}" + (enZonaCamion ? $" en Muelle 0{camionAfectado}" : " — retiro a Zona Técnica"));
+
+        if (enZonaCamion)
+        {
+            ModuloDespachoTMS tms = gestorTMS != null ? gestorTMS : ModuloDespachoTMS.Instance;
+            tms?.ClausurarMuellePorIncidenteAMR(camionAfectado, $"Falla HW de {objetivo.idRobot} en bahía", out _);
+            ReevaluarMuellesEnFlotaActiva();
+        }
+
+        DirectorCinematico.Instance?.EnfocarIncidenteCritico(objetivo.transform);
+
+        bool bloqueoPrevioHW = admisionNuevosPedidosBloqueada;
+        bool paradaActivada = RegistrarIncidenteYEvaluarReincidencia(objetivo, RobotAMR.TipoFallaAMR.FallaHardwareIrrecuperable);
+        RobotAMR relevo = (!paradaActivada && !operacionDetenidaPorSeguridad) ? SeleccionarRelevoParaIncidente(objetivo) : null;
+        if (bloqueoPrevioHW && !paradaActivada)
+        {
+            string idRel = relevo != null ? relevo.idRobot : "flota viva";
+            DashboardUI.Instance?.RegistrarFeedbackSupervisor(
+                $"[INCIDENTE HW ADICIONAL — {RelojSimuladorTurno.HoraActualFormateada}]: {objetivo.idRobot} fuera de servicio ({contextoZona}). Admisión permanece cerrada; continuidad sostenida con {idRel}.");
+        }
+
+        if (!paradaActivada && !operacionDetenidaPorSeguridad)
+        {
+            if (relevo != null && (colaPalletsEnPasillo.Count > 0 || colaPrioritariaReasignacion.Count > 0 || palletsEnColaWMS > 0))
             {
-                objetivoSinCarga = r;
-                break;
+                StartCoroutine(DespacharRelevoPendienteConHeadway(relevo));
             }
         }
 
-        if (objetivoSinCarga != null)
+        if (!enZonaCamion && objetivo.transform.position.z <= -2.64f && dronMantenimiento != null)
         {
-            EjecutarColapsoYRescateInmediato(objetivoSinCarga);
-            return;
+            Vector3 posSlotTecnico = ObtenerSiguienteSlotZonaTecnica(objetivo);
+            StartCoroutine(dronMantenimiento.EjecutarRescateAMRAbortado(
+                objetivo,
+                posSlotTecnico,
+                onRescateCompletado: () =>
+                {
+                    DashboardUI.Instance?.RegistrarLog($"<color=#EF4444>[TRASLADO ZONA TÉCNICA COMPLETADO]:</color> {objetivo.idRobot} depositado en Zona Técnica de Mantenimiento (Fuera de Servicio).");
+                },
+                onElevacionCompletada: () =>
+                {
+                    if (!operacionDetenidaPorSeguridad && !turnoEnFaseCritica)
+                    {
+                        RobotAMR seguimientoRelevo = (relevo != null && relevo.EsRecuperableEnTurno && relevo.estadoActual != RobotAMR.EstadoRobot.Apagado)
+                            ? relevo
+                            : (EstaEnMisionActiva(robotAMR_03) ? robotAMR_03 : (EstaEnMisionActiva(robotAMR_02) ? robotAMR_02 : null));
+                        DirectorCinematico.Instance?.LiberarFocoIncidente(seguimientoRelevo);
+                    }
+                },
+                esTrasladoZonaTecnica: true
+            ));
         }
-
-        // Caso B (Diferido seguro): AMR con estiba física completa descarga antes del corte <3%
-        for (int i = 0; i < candidatos.Length; i++)
+        else if (!operacionDetenidaPorSeguridad && !turnoEnFaseCritica)
         {
-            RobotAMR r = candidatos[i];
-            if (r == null) continue;
-            if (EstaEnMisionActiva(r) && r.TieneCargaFisica && !r.colapsoBMSArmadoPostDescarga)
-            {
-                objetivoCargado = r;
-                break;
-            }
+            DirectorCinematico.Instance?.LiberarFocoIncidente(relevo);
         }
-
-        if (objetivoCargado != null)
-        {
-            objetivoCargado.colapsoBMSArmadoPostDescarga = true;
-            objetivoCargado.bateriaActual = 4.2f;
-            DashboardUI.Instance?.ActualizarBateria(objetivoCargado.idRobot, objetivoCargado.bateriaActual / 100f, objetivoCargado.estadoActual);
-
-            string msgDiferido = $"[BMS CRÍTICO]: Caída de tensión en {objetivoCargado.idRobot} (4.2%). Completando descarga de estiba en muelle antes de corte total (<3%) y extracción aérea.";
-            DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B><b>{msgDiferido}</b></color>");
-            DashboardUI.Instance?.MostrarPopUpEjecutivoSLA("<color=#EF4444>BMS CRÍTICO (4.2%)</color>", msgDiferido, 4.5f);
-            Debug.Log($"<color=orange>{msgDiferido}</color>");
-            return;
-        }
-
-        RobotAMR fallback = BuscarAMRActivoOPisoParaSimulacion(soloEnMovimiento: true);
-        if (fallback == null)
-        {
-            DashboardUI.Instance?.RegistrarLog("<color=orange>[SIMULACIÓN SCADA <3%]:</color> No hay AMRs disponibles en escena.");
-            return;
-        }
-
-        if (fallback.colapsoBMSArmadoPostDescarga)
-        {
-            DashboardUI.Instance?.RegistrarLog($"<color=orange>[BMS CRÍTICO]:</color> {fallback.idRobot} ya tiene corte diferido armado tras descarga.");
-            return;
-        }
-
-        EjecutarColapsoYRescateInmediato(fallback);
     }
 
     public void FinalizarEntregaYEjecutarColapsoBMS(RobotAMR objetivo)
@@ -936,40 +1238,11 @@ public class RobotManagerEVE : MonoBehaviour
         EjecutarColapsoYRescateInmediato(objetivo);
     }
 
-    public void EjecutarColapsoYRescateInmediato(RobotAMR objetivo)
+    public void NotificarRetiroACargaPostEntrega(RobotAMR robotRetirado)
     {
-        if (objetivo == null) return;
-
-        Pedido pedidoHuerfano = objetivo.ForzarApagadoCriticoBMS();
-        DashboardUI.Instance?.RegistrarLog($"<color=#EF4444><b>[COLAPSO CRÍTICO <3% BMS]:</b></color> {objetivo.idRobot} apagado en pasillo (2.4% SoC). Desplegando Dron de Mantenimiento y relevo físico AMR-03.");
-
-        // Bloquea VCam4_Emergencia sobre el AMR colapsado desde el segundo 0 hasta completar izaje vertical (Etapa 2)
-        DirectorCinematico.Instance?.EnfocarIncidenteCritico(objetivo.transform);
-
-        RobotAMR relevo = (robotAMR_03 != null && robotAMR_03 != objetivo && robotAMR_03.estadoActual == RobotAMR.EstadoRobot.Inactivo)
-            ? robotAMR_03
-            : SeleccionarSiguienteRobotLibre(null);
-
-        if (relevo == robotAMR_03)
+        if (!operacionDetenidaPorSeguridad && !turnoEnFaseCritica && palletsEnColaWMS > 0)
         {
-            DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(true, "<color=#FACC15>EN RELEVO ACTIVO</color>");
-        }
-
-        if (pedidoHuerfano != null)
-        {
-            palletsEnColaWMS = Mathf.Max(palletsEnColaWMS, 1);
-            if (relevo != null && relevo.estadoActual == RobotAMR.EstadoRobot.Inactivo)
-            {
-                StartCoroutine(DespacharRelevoConHeadway(relevo, pedidoHuerfano));
-            }
-            else
-            {
-                colaPrioritariaReasignacion.Enqueue(pedidoHuerfano);
-            }
-        }
-        else if (palletsEnColaWMS > 0 && relevo != null)
-        {
-            DespacharColaDisponible(relevo);
+            DespacharColaDisponible();
         }
         else if (palletsEnColaWMS == 0 && ContarMisionesEnVuelo() == 0)
         {
@@ -978,8 +1251,353 @@ public class RobotManagerEVE : MonoBehaviour
             DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(false);
             DashboardUI.Instance?.RegistrarLog("<color=green>[WMS]:</color> Cola WMS completada. Unidades en espera de nuevas órdenes ERP.");
         }
+    }
 
-        if (dronMantenimiento != null)
+    public void ReencolarPedidoPorRetiroPreventivo(Pedido pedido)
+    {
+        if (pedido == null) return;
+        colaPrioritariaReasignacion.Enqueue(pedido);
+        palletsEnColaWMS = Mathf.Max(palletsEnColaWMS, 1);
+    }
+
+    public void ReencolarPalletEnPasilloPorRetiro(RobotAMR.PalletEnPasillo paquete)
+    {
+        if (paquete == null || paquete.pedido == null) return;
+        colaPalletsEnPasillo.Enqueue(paquete);
+        palletsEnColaWMS = Mathf.Max(palletsEnColaWMS, 1);
+    }
+
+    private void EncolarCargaDeUnidadCaida(Pedido pedidoHuerfano, RobotAMR.PalletEnPasillo palletDepositado)
+    {
+        if (palletDepositado != null && palletDepositado.palletGO != null && palletDepositado.pedido != null)
+        {
+            colaPalletsEnPasillo.Enqueue(palletDepositado);
+            palletsEnColaWMS = Mathf.Max(palletsEnColaWMS, 1);
+        }
+        else if (pedidoHuerfano != null)
+        {
+            colaPrioritariaReasignacion.Enqueue(pedidoHuerfano);
+            palletsEnColaWMS = Mathf.Max(palletsEnColaWMS, 1);
+        }
+    }
+
+    private RobotAMR SeleccionarRelevoParaIncidente(RobotAMR objetivo)
+    {
+        if (robotAMR_03 != null && robotAMR_03 != objetivo && robotAMR_03.EsRecuperableEnTurno && robotAMR_03.estadoActual == RobotAMR.EstadoRobot.Inactivo)
+        {
+            DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(true, "<color=#FACC15>EN RELEVO ACTIVO</color>");
+            return robotAMR_03;
+        }
+
+        RobotAMR candidato = SeleccionarSiguienteRobotLibre(null);
+        if (candidato != null && candidato != objetivo)
+        {
+            if (candidato == robotAMR_03)
+            {
+                DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(true, "<color=#FACC15>EN RELEVO ACTIVO</color>");
+            }
+            return candidato;
+        }
+        return null;
+    }
+
+    public bool TieneFlotaAsignadaEnEscena()
+    {
+        return robotAMR_01 != null || robotAMR_02 != null || robotAMR_03 != null;
+    }
+
+    public int ContarAMRsRecuperablesEnTurno()
+    {
+        if (!TieneFlotaAsignadaEnEscena()) return 3;
+
+        RobotAMR[] flota = new RobotAMR[] { robotAMR_01, robotAMR_02, robotAMR_03 };
+        int recuperables = 0;
+        for (int i = 0; i < flota.Length; i++)
+        {
+            RobotAMR r = flota[i];
+            if (r == null || !r.gameObject.activeInHierarchy) continue;
+            bool varadoEnCamion = r.estadoActual == RobotAMR.EstadoRobot.Apagado && r.EstaEnZonaCamionORampa();
+            if (r.EsRecuperableEnTurno && !varadoEnCamion)
+            {
+                recuperables++;
+            }
+        }
+        return recuperables;
+    }
+
+    public int ContarAMRsOperativosInmediatos()
+    {
+        if (!TieneFlotaAsignadaEnEscena()) return 3;
+
+        RobotAMR[] flota = new RobotAMR[] { robotAMR_01, robotAMR_02, robotAMR_03 };
+        int operativos = 0;
+        for (int i = 0; i < flota.Length; i++)
+        {
+            RobotAMR r = flota[i];
+            if (r == null || !r.gameObject.activeInHierarchy) continue;
+            if (r.EsRecuperableEnTurno && r.estadoActual != RobotAMR.EstadoRobot.Apagado)
+            {
+                operativos++;
+            }
+        }
+        return operativos;
+    }
+
+    private int ContarFlotaTotalConfigurada()
+    {
+        if (!TieneFlotaAsignadaEnEscena()) return 3;
+        int total = 0;
+        if (robotAMR_01 != null && robotAMR_01.gameObject.activeInHierarchy) total++;
+        if (robotAMR_02 != null && robotAMR_02.gameObject.activeInHierarchy) total++;
+        if (robotAMR_03 != null && robotAMR_03.gameObject.activeInHierarchy) total++;
+        return Mathf.Max(1, total);
+    }
+
+    public void ObtenerEstadoFlotaReal(out int amrsOperativosPiso, out bool tieneSoporteDedicadoDisponible)
+    {
+        if (!TieneFlotaAsignadaEnEscena())
+        {
+            amrsOperativosPiso = 2;
+            tieneSoporteDedicadoDisponible = true;
+            return;
+        }
+
+        int recuperables = ContarAMRsRecuperablesEnTurno();
+        int operativosInmediatos = ContarAMRsOperativosInmediatos();
+        amrsOperativosPiso = Mathf.Clamp(recuperables, 0, 2);
+        tieneSoporteDedicadoDisponible = robotAMR_03 != null &&
+                                         robotAMR_03.gameObject.activeInHierarchy &&
+                                         robotAMR_03.EsRecuperableEnTurno &&
+                                         recuperables >= 3 &&
+                                         operativosInmediatos >= 3;
+    }
+
+    public bool HayUnidadSoporteDisponible()
+    {
+        if (!TieneFlotaAsignadaEnEscena()) return true;
+
+        int recuperables = ContarAMRsRecuperablesEnTurno();
+        int operativosInmediatos = ContarAMRsOperativosInmediatos();
+
+        if (flotaEscaladaDual)
+        {
+            return recuperables >= 3 && operativosInmediatos >= 3 &&
+                   robotAMR_03 != null && robotAMR_03.gameObject.activeInHierarchy &&
+                   robotAMR_03.EsRecuperableEnTurno && robotAMR_03.estadoActual != RobotAMR.EstadoRobot.Apagado;
+        }
+
+        if (recuperables < 2) return false;
+
+        if (TotalIncidentesCriticosTurno > 0 && operativosInmediatos <= ObtenerCuposMaximosPiso())
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private int ContarAMRsOperativosDisponibles()
+    {
+        return ContarAMRsOperativosInmediatos();
+    }
+
+    public void ActivarBloqueoAdmisionNuevosPedidos(string motivo)
+    {
+        motivoBloqueoAdmision = string.IsNullOrEmpty(motivo)
+            ? "Unidad de soporte/reserva perdida o flota degradada en el turno"
+            : motivo;
+        bool flancoNuevo = !admisionNuevosPedidosBloqueada;
+        admisionNuevosPedidosBloqueada = true;
+
+        int recuperables = ContarAMRsRecuperablesEnTurno();
+        int totalFlota = ContarFlotaTotalConfigurada();
+        string horaActualTexto = RelojSimuladorTurno.HoraActualFormateada;
+        DashboardUI.Instance?.ActualizarBannerTurno($"<b><color=#F59E0B>MODO CONTINUIDAD ({recuperables}/{totalFlota} AMRs | {horaActualTexto}):</color> ADMISIÓN NUEVOS PEDIDOS BLOQUEADA — DRENANDO COLA ACTIVA</b>");
+
+        if (flancoNuevo)
+        {
+            string avisoBuzon = $"[BLOQUEO DE ADMISIÓN NUEVOS PEDIDOS — {horaActualTexto} (Restan {RelojSimuladorTurno.TiempoRestanteFormateado} hasta {RelojSimuladorTurno.HoraCierreTurnoTexto})]: {motivoBloqueoAdmision}. El turno continúa con {recuperables} unidad(es) para completar la cola ya asignada.";
+            DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B><b>{avisoBuzon}</b></color>");
+            DashboardUI.Instance?.RegistrarFeedbackSupervisor(avisoBuzon);
+        }
+
+        NotificarCambioEstadoAdmisionJSON();
+    }
+
+    public bool RegistrarIncidenteYEvaluarReincidencia(RobotAMR unidadAfectada, RobotAMR.TipoFallaAMR tipoIncidente)
+    {
+        if (tipoIncidente == RobotAMR.TipoFallaAMR.DescargaCritica3)
+        {
+            contadorDescargasCriticasTurno++;
+        }
+        else if (tipoIncidente == RobotAMR.TipoFallaAMR.FallaHardwareIrrecuperable)
+        {
+            contadorFallasHardwareTurno++;
+        }
+
+        int recuperablesRestantes = ContarAMRsRecuperablesEnTurno();
+        int operativosRestantes = ContarAMRsOperativosInmediatos();
+        string idUnidad = unidadAfectada != null ? unidadAfectada.idRobot : "AMR";
+
+        // Cierre total del turno SOLO cuando 0 AMRs quedan operativos o recuperables
+        if (TotalIncidentesCriticosTurno > 0 && recuperablesRestantes == 0)
+        {
+            string motivo = $"Cero unidades AMR operativas o recuperables tras incidente en {idUnidad} ({contadorDescargasCriticasTurno} descargas / {contadorFallasHardwareTurno} fallas HW).";
+            ActivarFaseCriticaYDetenerOperacion(unidadAfectada, motivo);
+            return true;
+        }
+
+        // Ley de Continuidad: con >= 1 AMR recuperable u operativo, nunca se detiene el turno activo;
+        // si se pierde el soporte o la flota queda degradada, se bloquea únicamente la admisión de nuevos pedidos.
+        if (contadorFallasHardwareTurno > 0 || !HayUnidadSoporteDisponible())
+        {
+            string motivoSoporte = contadorFallasHardwareTurno > 0
+                ? $"Flota degradada tras falla HW de {idUnidad} ({recuperablesRestantes} unidad(es) recuperables, {operativosRestantes} operativas en pista)"
+                : $"Pérdida de unidad de soporte/reserva tras incidente en {idUnidad} ({operativosRestantes} unidad(es) operativas inmediatas)";
+            ActivarBloqueoAdmisionNuevosPedidos(motivoSoporte);
+        }
+        else
+        {
+            DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[CONTINUIDAD OPERATIVA]:</color> Incidente en {idUnidad} contenido con unidad de soporte activa ({operativosRestantes} AMRs operativos). Cola WMS continúa.");
+        }
+
+        return false;
+    }
+
+    public void ActivarFaseCriticaYDetenerOperacion(RobotAMR unidadDisparadora, string motivo)
+    {
+        turnoEnFaseCritica = true;
+        operacionDetenidaPorSeguridad = true;
+        admisionNuevosPedidosBloqueada = true;
+        motivoFaseCritica = !string.IsNullOrEmpty(motivo) ? motivo : "Cero unidades AMR operativas o recuperables en el turno.";
+        motivoBloqueoAdmision = motivoFaseCritica;
+
+        if (rutinaHeadwayDespacho != null)
+        {
+            StopCoroutine(rutinaHeadwayDespacho);
+            rutinaHeadwayDespacho = null;
+        }
+
+        RobotAMR[] flota = new RobotAMR[] { robotAMR_01, robotAMR_02, robotAMR_03 };
+        for (int i = 0; i < flota.Length; i++)
+        {
+            if (flota[i] != null && flota[i] != unidadDisparadora)
+            {
+                flota[i].DetenerPorParadaSeguridadTurno();
+            }
+        }
+
+        string msgCritico = $"[CIERRE TOTAL DE TURNO — 0 AMRs OPERATIVOS]: {motivoFaseCritica} Despachos detenidos.";
+        DashboardUI.Instance?.RegistrarLog($"<color=#EF4444><b>{msgCritico}</b></color>");
+        GestorAudioSCADA.Instance?.ActivarAlarmaSonoraFabrica(msgCritico);
+        DashboardUI.Instance?.MostrarAlertaFaseCriticaSupervisor(motivoFaseCritica, contadorDescargasCriticasTurno, contadorFallasHardwareTurno);
+        NotificarCambioEstadoAdmisionJSON();
+    }
+
+    public bool SolicitarAutorizacionReincorporacion(RobotAMR amr)
+    {
+        if (amr == null) return false;
+
+        if (!amr.EsRecuperableEnTurno)
+        {
+            DashboardUI.Instance?.RegistrarLog($"<color=#DC2626>[EVE REINCORPORACIÓN DENEGADA]:</color> {amr.idRobot} presenta falla de hardware irrecuperable y permanece fuera de servicio.");
+            return false;
+        }
+
+        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica)
+        {
+            DashboardUI.Instance?.RegistrarLog($"<color=#EF4444>[EVE REINCORPORACIÓN BLOQUEADA]:</color> {amr.idRobot} alcanzó 80% SoC, pero el turno está en FASE CRÍTICA. Requiere autorización del supervisor en piso.");
+            return false;
+        }
+
+        return true;
+    }
+
+    public void ConfirmarReincorporacionAPista(RobotAMR amr)
+    {
+        if (amr == null) return;
+
+        if (amr == robotAMR_01 && (robotAMR_02 == null || !robotAMR_02.EsRecuperableEnTurno))
+        {
+            relevo24_7Activo = false;
+        }
+
+        string msg = $"<color=#10B981>[EVE AUTORIZACIÓN REINCORPORACIÓN]:</color> {amr.idRobot} recargado al {amr.bateriaActual:F1}% en Pad Inductivo. Autorizado para volver a operar en pista.";
+        DashboardUI.Instance?.RegistrarLog(msg);
+        Debug.Log(msg);
+
+        if (admisionNuevosPedidosBloqueada && contadorFallasHardwareTurno == 0 && HayUnidadSoporteDisponible())
+        {
+            admisionNuevosPedidosBloqueada = false;
+            motivoBloqueoAdmision = string.Empty;
+            DashboardUI.Instance?.ActualizarBannerTurno($"<b><color=#38BDF8>TURNO NOCTURNO:</color> {RelojSimuladorTurno.HoraActualFormateada} (Flota Restablecida {ContarAMRsRecuperablesEnTurno()}/{ContarFlotaTotalConfigurada()}) | Química: <color=#F59E0B>LiFePO4</color> (80% - 20%)</b>");
+        }
+
+        if (!operacionDetenidaPorSeguridad && !turnoEnFaseCritica && palletsEnColaWMS > 0)
+        {
+            DespacharColaDisponible(amr);
+        }
+
+        NotificarCambioEstadoAdmisionJSON();
+    }
+
+    public void EjecutarColapsoYRescateInmediato(RobotAMR objetivo)
+    {
+        if (objetivo == null || objetivo.estadoActual == RobotAMR.EstadoRobot.Apagado || objetivo.estadoActual == RobotAMR.EstadoRobot.FueraDeServicio_Danado) return;
+
+        bool enZonaCamion = objetivo.EstaEnZonaCamionORampa();
+        int camionAfectado = enZonaCamion ? DeterminarNumeroCamionPorAMR(objetivo) : 0;
+
+        Pedido pedidoHuerfano = objetivo.ForzarApagadoCriticoBMS(out RobotAMR.PalletEnPasillo palletDepositado);
+        EncolarCargaDeUnidadCaida(pedidoHuerfano, enZonaCamion ? null : palletDepositado);
+
+        string detallePallet = (!enZonaCamion && palletDepositado != null && palletDepositado.palletGO != null)
+            ? $" Estiba {(pedidoHuerfano != null ? pedidoHuerfano.id_pallet : string.Empty)} depositada en pasillo para recolección."
+            : (enZonaCamion && pedidoHuerfano != null ? $" Pedido {pedidoHuerfano.id_pallet} reencolado sin reingresar a bahía clausurada." : string.Empty);
+
+        string detalleRescate = enZonaCamion
+            ? $"Varado en Muelle_Camion_0{camionAfectado} (vuelo dron restringido); bahía clausurada para despeje humano."
+            : "Desplegando Dron de Mantenimiento.";
+
+        DashboardUI.Instance?.RegistrarLog($"<color=#EF4444><b>[RAMA A - COLAPSO <=3% BMS]:</b></color> {objetivo.idRobot} apagado ({objetivo.bateriaActual:F1}% SoC).{detallePallet} {detalleRescate}");
+
+        if (enZonaCamion)
+        {
+            ModuloDespachoTMS tms = gestorTMS != null ? gestorTMS : ModuloDespachoTMS.Instance;
+            tms?.ClausurarMuellePorIncidenteAMR(camionAfectado, $"Descarga <=3% de {objetivo.idRobot} en bahía/rampa", out _);
+            ReevaluarMuellesEnFlotaActiva();
+            GestorAudioSCADA.Instance?.ActivarAlarmaSonoraFabrica($"AMR {objetivo.idRobot} varado en Muelle 0{camionAfectado} (despeje humano requerido)");
+        }
+
+        // Bloquea VCam4_Emergencia sobre el AMR colapsado desde el segundo 0 hasta completar izaje vertical
+        DirectorCinematico.Instance?.EnfocarIncidenteCritico(objetivo.transform);
+
+        bool bloqueoPrevioBMS = admisionNuevosPedidosBloqueada;
+        bool paradaActivada = RegistrarIncidenteYEvaluarReincidencia(objetivo, RobotAMR.TipoFallaAMR.DescargaCritica3);
+        RobotAMR relevo = (!paradaActivada && !operacionDetenidaPorSeguridad) ? SeleccionarRelevoParaIncidente(objetivo) : null;
+        if (bloqueoPrevioBMS && !paradaActivada)
+        {
+            string idRel = relevo != null ? relevo.idRobot : "flota viva";
+            DashboardUI.Instance?.RegistrarFeedbackSupervisor(
+                $"[COLAPSO BMS <=3% — {RelojSimuladorTurno.HoraActualFormateada}]: {objetivo.idRobot} apagado. Admisión permanece cerrada; continuidad sostenida con {idRel}.");
+        }
+
+        if (!paradaActivada && !operacionDetenidaPorSeguridad)
+        {
+            if (relevo != null && (colaPalletsEnPasillo.Count > 0 || colaPrioritariaReasignacion.Count > 0 || palletsEnColaWMS > 0))
+            {
+                StartCoroutine(DespacharRelevoPendienteConHeadway(relevo));
+            }
+            else if (palletsEnColaWMS == 0 && ContarMisionesEnVuelo() == 0)
+            {
+                flotaEscaladaDual = false;
+                DashboardUI.Instance?.ConfigurarReservaAMR02(false);
+                DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(false);
+                DashboardUI.Instance?.RegistrarLog("<color=green>[WMS]:</color> Cola WMS completada. Unidades en espera de nuevas órdenes ERP.");
+            }
+        }
+
+        if (!enZonaCamion && objetivo.transform.position.z <= -2.64f && dronMantenimiento != null)
         {
             Vector3 posPadDestino = ObtenerPosicionPadPorUnidad(objetivo);
             StartCoroutine(dronMantenimiento.EjecutarRescateAMRAbortado(
@@ -987,24 +1605,28 @@ public class RobotManagerEVE : MonoBehaviour
                 posPadDestino,
                 onRescateCompletado: () =>
                 {
-                    DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[RESCATE AÉREO COMPLETADO]:</color> {objetivo.idRobot} acoplado en Pad Inductivo (Recarga 1C iniciada).");
+                    DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[RESCATE AÉREO COMPLETADO]:</color> {objetivo.idRobot} acoplado en Pad Inductivo (Recarga inductiva 2h iniciada hasta >=80%).");
                 },
                 onElevacionCompletada: () =>
                 {
-                    RobotAMR seguimientoRelevo = (relevo != null && relevo.estadoActual != RobotAMR.EstadoRobot.Apagado)
-                        ? relevo
-                        : (EstaEnMisionActiva(robotAMR_03) ? robotAMR_03 : null);
-                    DirectorCinematico.Instance?.LiberarFocoIncidente(seguimientoRelevo);
-                }
+                    if (!operacionDetenidaPorSeguridad && !turnoEnFaseCritica)
+                    {
+                        RobotAMR seguimientoRelevo = (relevo != null && relevo.EsRecuperableEnTurno && relevo.estadoActual != RobotAMR.EstadoRobot.Apagado)
+                            ? relevo
+                            : (EstaEnMisionActiva(robotAMR_03) ? robotAMR_03 : (EstaEnMisionActiva(robotAMR_02) ? robotAMR_02 : null));
+                        DirectorCinematico.Instance?.LiberarFocoIncidente(seguimientoRelevo);
+                    }
+                },
+                esTrasladoZonaTecnica: false
             ));
         }
-        else
+        else if (!operacionDetenidaPorSeguridad && !turnoEnFaseCritica)
         {
             DirectorCinematico.Instance?.LiberarFocoIncidente(relevo);
         }
     }
 
-    private IEnumerator DespacharRelevoConHeadway(RobotAMR relevo, Pedido pedido)
+    private IEnumerator DespacharRelevoPendienteConHeadway(RobotAMR relevo)
     {
         if (relevo != null && relevo.transform.position.z < RobotAMR.ZUmbralPortico)
         {
@@ -1013,16 +1635,33 @@ public class RobotManagerEVE : MonoBehaviour
                 yield return null;
             }
         }
-        DespacharPedidoEspecificoARobot(relevo, pedido);
+        if (!operacionDetenidaPorSeguridad && !turnoEnFaseCritica && relevo != null)
+        {
+            DespacharColaDisponible(relevo);
+        }
     }
 
-    private RobotAMR BuscarAMRActivoOPisoParaSimulacion(bool soloEnMovimiento)
+    private RobotAMR BuscarAMRActivoOPisoParaSimulacion(bool soloEnMovimiento, bool preferirEnCorredor = false)
     {
         RobotAMR[] candidatos = new RobotAMR[] { robotAMR_01, robotAMR_02, robotAMR_03 };
+        if (preferirEnCorredor)
+        {
+            for (int i = 0; i < candidatos.Length; i++)
+            {
+                RobotAMR r = candidatos[i];
+                if (r == null || !r.EsRecuperableEnTurno) continue;
+                if ((r.estadoActual == RobotAMR.EstadoRobot.En_Transito || r.estadoActual == RobotAMR.EstadoRobot.Transportando) &&
+                    r.transform.position.z <= -2.64f)
+                {
+                    return r;
+                }
+            }
+        }
+
         for (int i = 0; i < candidatos.Length; i++)
         {
             RobotAMR r = candidatos[i];
-            if (r == null) continue;
+            if (r == null || !r.EsRecuperableEnTurno) continue;
             if (r.estadoActual == RobotAMR.EstadoRobot.En_Transito || r.estadoActual == RobotAMR.EstadoRobot.Transportando)
             {
                 return r;
@@ -1034,7 +1673,7 @@ public class RobotManagerEVE : MonoBehaviour
             for (int i = 0; i < candidatos.Length; i++)
             {
                 RobotAMR r = candidatos[i];
-                if (r != null && r.estadoActual != RobotAMR.EstadoRobot.Apagado && r.estadoActual != RobotAMR.EstadoRobot.Recargando)
+                if (r != null && r.EsRecuperableEnTurno && r.estadoActual != RobotAMR.EstadoRobot.Apagado && r.estadoActual != RobotAMR.EstadoRobot.Recargando)
                 {
                     return r;
                 }
@@ -1044,13 +1683,22 @@ public class RobotManagerEVE : MonoBehaviour
         for (int i = 0; i < candidatos.Length; i++)
         {
             RobotAMR r = candidatos[i];
-            if (r != null && r.estadoActual == RobotAMR.EstadoRobot.Inactivo)
+            if (r != null && r.EsRecuperableEnTurno && r.estadoActual == RobotAMR.EstadoRobot.Inactivo)
             {
                 return r;
             }
         }
 
-        return robotAMR_01 != null ? robotAMR_01 : robotAMR_02;
+        for (int i = 0; i < candidatos.Length; i++)
+        {
+            RobotAMR r = candidatos[i];
+            if (r != null && r.EsRecuperableEnTurno && r.estadoActual != RobotAMR.EstadoRobot.Apagado)
+            {
+                return r;
+            }
+        }
+
+        return null;
     }
 
     void MoverPorWaypoints()
@@ -1185,6 +1833,70 @@ public class RobotManagerEVE : MonoBehaviour
         return Mathf.Clamp(amr != null ? amr.numCamionAsignado : 1, 1, 3);
     }
 
+    public void ReevaluarMuellesEnFlotaActiva()
+    {
+        RobotAMR[] flota = new RobotAMR[] { robotAMR_01, robotAMR_02, robotAMR_03 };
+        for (int i = 0; i < flota.Length; i++)
+        {
+            if (flota[i] != null && flota[i].gameObject.activeInHierarchy)
+            {
+                flota[i].ReevaluarMuelleDestinoSiClausurado();
+            }
+        }
+    }
+
+    public bool ConfirmarDespejeHumanoMuelleDesdeHUD(int numeroCamion = 0)
+    {
+        ModuloDespachoTMS tms = gestorTMS != null ? gestorTMS : ModuloDespachoTMS.Instance;
+        if (tms == null) return false;
+
+        int camionObjetivo = numeroCamion;
+        if (camionObjetivo <= 0)
+        {
+            tms.TieneAlgunMuelleClausuradoOEnInspeccion(out camionObjetivo);
+        }
+        if (camionObjetivo < 1 || camionObjetivo > 3) return false;
+
+        bool despejado = tms.ConfirmarDespejeHumanoMuelle(camionObjetivo);
+        if (!despejado) return false;
+
+        RobotAMR[] flota = new RobotAMR[] { robotAMR_01, robotAMR_02, robotAMR_03 };
+        for (int i = 0; i < flota.Length; i++)
+        {
+            RobotAMR r = flota[i];
+            if (r == null || !r.gameObject.activeInHierarchy) continue;
+            if (!r.EstaEnZonaCamionORampa()) continue;
+            if (DeterminarNumeroCamionPorAMR(r) != camionObjetivo) continue;
+
+            r.LimpiarCargaRetenidaEnBahia();
+            if (r.estadoActual == RobotAMR.EstadoRobot.FueraDeServicio_Danado)
+            {
+                Vector3 slotTecnico = ObtenerSiguienteSlotZonaTecnica(r);
+                r.FinalizarTrasladoAZonaTecnica(slotTecnico);
+                DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B>[DESPEJE MUELLE 0{camionObjetivo}]:</color> Chasis dañado {r.idRobot} trasladado por personal a Zona Técnica.");
+            }
+            else if (r.estadoActual == RobotAMR.EstadoRobot.Apagado)
+            {
+                Vector3 pad = ObtenerPosicionPadPorUnidad(r);
+                r.FinalizarRescateEnPad(pad);
+                DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[DESPEJE MUELLE 0{camionObjetivo}]:</color> {r.idRobot} retirado hacia Pad Inductivo para recarga inductiva (2h).");
+            }
+        }
+
+        if (GestorAudioSCADA.Instance != null && GestorAudioSCADA.Instance.alarmaFabricaActiva &&
+            !tms.TieneAlgunMuelleClausuradoOEnInspeccion(out _) && !operacionDetenidaPorSeguridad)
+        {
+            GestorAudioSCADA.Instance.SilenciarAlarmaFabrica();
+        }
+
+        ReevaluarMuellesEnFlotaActiva();
+        if (!operacionDetenidaPorSeguridad && !turnoEnFaseCritica && palletsEnColaWMS > 0)
+        {
+            DespacharColaDisponible();
+        }
+        return true;
+    }
+
     private void EjecutarProtocoloInspeccionHumanaMuelle(RobotAMR amrEnCamion)
     {
         int camionAfectado = DeterminarNumeroCamionPorAMR(amrEnCamion);
@@ -1193,14 +1905,19 @@ public class RobotManagerEVE : MonoBehaviour
 
         if (tms != null)
         {
-            tms.ReportarInspeccionHumanaMuelle(camionAfectado, out siguienteCamion);
+            tms.ClausurarMuellePorIncidenteAMR(camionAfectado, "Obstrucción / inspección humana obligatoria en bahía", out siguienteCamion);
         }
 
-        string titulo = "INSPECCIÓN HUMANA EN MUELLE 0" + camionAfectado;
-        string detalle = "Zona de camión restringida para dron de soporte aéreo. Solicitud enviada al supervisor/operario en piso; nuevos pedidos redirigidos a Muelle_Camion_0" + siguienteCamion + ".";
+        ReevaluarMuellesEnFlotaActiva();
 
-        DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B><b>[{titulo}]:</b></color> {detalle}");
-        DashboardUI.Instance?.MostrarPopUpEjecutivoSLA($"<color=#F59E0B>{titulo}</color>", detalle, 5.0f);
+        string titulo = "CLAUSURA MUELLE 0" + camionAfectado + " — INTERVENCIÓN HUMANA";
+        string detalle = siguienteCamion > 0
+            ? $"Zona de camión bloqueada (vuelo dron restringido). Alarma sonora de fábrica activada; pedidos redirigidos a Muelle_Camion_0{siguienteCamion} hasta confirmar despeje humano."
+            : "Zona de camión bloqueada y sin otros muelles abiertos. Alarma sonora de fábrica activada hasta confirmación humana en piso.";
+
+        DashboardUI.Instance?.RegistrarLog($"<color=#EF4444><b>[{titulo}]:</b></color> {detalle}");
+        DashboardUI.Instance?.MostrarPopUpEjecutivoSLA($"<color=#EF4444>{titulo}</color>", detalle, 5.0f);
+        GestorAudioSCADA.Instance?.ActivarAlarmaSonoraFabrica($"Bloqueo en Muelle_Camion_0{camionAfectado} — despeje humano requerido");
         Debug.LogWarning($"[{titulo}] {detalle}");
     }
 
@@ -1329,7 +2046,8 @@ public class RobotManagerEVE : MonoBehaviour
         int nuevosPedidos,
         float bateriaAMR01,
         float bateriaAMR02,
-        float horaTurnoActual)
+        float horaTurnoActual,
+        int amrsActivosFlota = 2)
     {
         const float deltaSoCPedido = 3.85f;
         const float pisoSeguridadLiFePO4 = RobotAMR.UmbralSeguridadLiFePO4; // 20.0f
@@ -1347,7 +2065,8 @@ public class RobotManagerEVE : MonoBehaviour
         const float tiempoCicloSimSegundos = 4.50f;
         float tiempoCicloHorasReales = (tiempoCicloSimSegundos * RobotAMR.FactorCompresionTurno) / 3600f; // 0.20 h/pedido
         float tasaAbsorcionPorAMR = 1f / tiempoCicloHorasReales; // 5.0 ped/h
-        float tasaAbsorcionFlotaActual = 2f * tasaAbsorcionPorAMR; // 10.0 ped/h
+        int amrsVivos = Mathf.Clamp(amrsActivosFlota, 0, 3);
+        float tasaAbsorcionFlotaActual = amrsVivos * tasaAbsorcionPorAMR; // 10.0 ped/h para 2 AMRs
 
         float horasRestantes = Mathf.Max(0.5f, duracionTurnoHoras - horaTurnoActual);
         int pedidosAbsorbibles = Mathf.Clamp(Mathf.FloorToInt(horasRestantes * tasaAbsorcionFlotaActual), 0, nuevosPedidos);
@@ -1361,7 +2080,7 @@ public class RobotManagerEVE : MonoBehaviour
         if (horaTurnoActual <= 3.0f)
         {
             escenario = EscenarioHorizonte.EscenarioA_InicioTurno;
-            amrRequeridos = 3; // 2 activos + 1 relevo en carga inductiva 1C
+            amrRequeridos = 3; // 2 activos + 1 relevo en carga inductiva 2h
             porcentajeCarryOver = 0f;
             etiquetaEscenario = "ESCENARIO A (INICIO TURNO)";
         }
@@ -1402,13 +2121,16 @@ public class RobotManagerEVE : MonoBehaviour
         if (alertaDemandaEnCurso) return;
         alertaDemandaEnCurso = true;
 
-        float bateriaAMR01 = robotAMR_01 != null ? robotAMR_01.bateriaActual : 80.0f;
-        float bateriaAMR02 = robotAMR_02 != null ? robotAMR_02.bateriaActual : 80.0f;
+        float bateriaAMR01 = (robotAMR_01 != null && robotAMR_01.EsRecuperableEnTurno) ? robotAMR_01.bateriaActual : 20.0f;
+        float bateriaAMR02 = (robotAMR_02 != null && robotAMR_02.EsRecuperableEnTurno) ? robotAMR_02.bateriaActual : 20.0f;
+        ObtenerEstadoFlotaReal(out int amrsActivosReales, out _);
+        float horaConsulta = RelojSimuladorTurno.HorasTranscurridas;
+        string relojTexto = RelojSimuladorTurno.HoraActualFormateada;
 
-        ResultadoHorizonteO1 r = CalcularProyeccionHorizonte(nuevosPedidos, bateriaAMR01, bateriaAMR02, horaTurnoActual);
+        ResultadoHorizonteO1 r = CalcularProyeccionHorizonte(nuevosPedidos, bateriaAMR01, bateriaAMR02, horaConsulta, amrsActivosReales);
 
-        Debug.Log($"<color=#F59E0B>[ANALIZADOR HORIZONTE O(1) - {r.EtiquetaEscenario}]:</color> Hora {r.HoraTurnoActual:F1}/8 (Restan {r.HorasRestantes:F1}h). Lote: {r.NuevosPedidos} ped ({r.PesoLoteKg:F0} kg). Déficit LiFePO4: -{r.DeficitSoC:F1}% SoC | Carry-over SLA: {r.PorcentajeCarryOver:F0}% | Recomendación: {r.AMRRequeridos} AMRs.");
-        DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B><b>[WMS HORIZONTE - {r.EtiquetaEscenario}]:</b></color> Ráfaga de {r.NuevosPedidos} pedidos ({r.PesoLoteKg:F0} kg) en Hora {r.HoraTurnoActual:F1}/8 (Restan {r.HorasRestantes:F1}h).");
+        Debug.Log($"<color=#F59E0B>[ANALIZADOR HORIZONTE O(1) - {r.EtiquetaEscenario}]:</color> Reloj {relojTexto} (Restan {r.HorasRestantes:F1}h). Lote: {r.NuevosPedidos} ped ({r.PesoLoteKg:F0} kg). Déficit LiFePO4: -{r.DeficitSoC:F1}% SoC | Carry-over SLA: {r.PorcentajeCarryOver:F0}% | Recomendación: {r.AMRRequeridos} AMRs.");
+        DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B><b>[WMS HORIZONTE - {r.EtiquetaEscenario}]:</b></color> Ráfaga de {r.NuevosPedidos} pedidos ({r.PesoLoteKg:F0} kg) a las {relojTexto} (Restan {RelojSimuladorTurno.FormatearDuracionHMS(r.HorasRestantes)} hasta {RelojSimuladorTurno.HoraCierreTurnoTexto}).");
         DashboardUI.Instance?.RegistrarLog($"<color=#EF4444><b>[DICTAMEN O(1)]:</b></color> Déficit LiFePO4: -{r.DeficitSoC:F1}% SoC | Rezago SLA (Carry-over): {r.PorcentajeCarryOver:F0}%. Flota recomendada: {r.AMRRequeridos} AMRs.");
 
         DashboardUI.Instance?.MostrarAlertaIncertidumbreDemanda(
@@ -1424,11 +2146,26 @@ public class RobotManagerEVE : MonoBehaviour
 
     public void IngestarManifiestoDesdeSO()
     {
-        if (!turnoIniciado) return;
+        if (!turnoIniciado)
+        {
+            Debug.LogWarning($"[EVE Ingesta JSON]: IngestarManifiestoDesdeSO ignorado porque turnoIniciado == false en '{gameObject.name}' (InstanceID={GetInstanceID()}).");
+            return;
+        }
 
-        string dirInicial = Directory.Exists(Application.streamingAssetsPath)
-            ? Application.streamingAssetsPath
-            : Environment.GetFolderPath(Environment.SpecialFolder.Personal);
+        if (!PuedeRecibirNuevosPedidos(out _, out string motivoBloqueo))
+        {
+            GestorAudioSCADA.Instance?.ReproducirBloqueoIngestaJSON();
+            DashboardUI.Instance?.RegistrarLog("<color=#EF4444>[INGESTA BLOQUEADA]:</color> Sin capacidad/admisión bloqueada para nuevos pedidos. Detalle en Buzón.");
+            DashboardUI.Instance?.MostrarPopUpExcedeCapacidadActual(0, 0, "Admisión bloqueada");
+            if (!string.IsNullOrEmpty(motivoBloqueo))
+            {
+                DashboardUI.Instance?.RegistrarFeedbackSupervisor($"[BLOQUEO DE INGESTA JSON — {RelojSimuladorTurno.HoraActualFormateada}]: {motivoBloqueo}");
+            }
+            NotificarCambioEstadoAdmisionJSON();
+            return;
+        }
+
+        string dirInicial = SelectorArchivosWindows.ResolverDirectorioInicialBandejaERP();
 
 #if UNITY_EDITOR
         string rutaSeleccionada = UnityEditor.EditorUtility.OpenFilePanel("Cargar Lote ERP", dirInicial, "json");
@@ -1458,32 +2195,18 @@ public class RobotManagerEVE : MonoBehaviour
             }
         }));
 #elif UNITY_STANDALONE_WIN
-        StartCoroutine(EjecutarSelectorArchivoSOAsync(() =>
+        string dirWindows = SelectorArchivosWindows.NormalizarRutaWindows(dirInicial);
+        string rutaSeleccionada = SelectorArchivosWindows.AbrirDialogoJson("Cargar Lote ERP", dirWindows);
+        if (!string.IsNullOrEmpty(rutaSeleccionada))
         {
-            string dirEscapado = dirInicial.Replace("'", "''");
-            string psScript = $"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; $d.InitialDirectory = '{dirEscapado}'; $d.Filter = 'JSON (*.json)|*.json'; if ($d.ShowDialog() -eq 'OK') {{ Write-Output $d.FileName }}";
-            var psi = new ProcessStartInfo
-            {
-                FileName = "powershell",
-                Arguments = $"-NoProfile -STA -Command \"{psScript}\"",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                CreateNoWindow = true
-            };
-            using (Process proc = Process.Start(psi))
-            {
-                if (proc == null) return string.Empty;
-                string salida = proc.StandardOutput.ReadToEnd();
-                proc.WaitForExit();
-                return proc.ExitCode == 0 ? salida.Trim() : string.Empty;
-            }
-        }));
+            ProcesarArchivoManifiesto(rutaSeleccionada);
+        }
 #else
         DashboardUI.Instance?.MostrarPopUpRechazo("Selector de archivos no soportado en esta plataforma.");
 #endif
     }
 
-#if !UNITY_EDITOR && (UNITY_STANDALONE_LINUX || UNITY_STANDALONE_WIN)
+#if !UNITY_EDITOR && UNITY_STANDALONE_LINUX
     private IEnumerator EjecutarSelectorArchivoSOAsync(Func<string> accionSelector)
     {
         Task<string> tarea = Task.Run(() =>
@@ -1527,9 +2250,27 @@ public class RobotManagerEVE : MonoBehaviour
             return false;
         }
 
+        string jsonLimpio = json.TrimStart('\uFEFF').Trim();
+        if (string.IsNullOrWhiteSpace(jsonLimpio))
+        {
+            motivoError = "Esquema inválido";
+            return false;
+        }
+
+        bool eraArregloRaiz = jsonLimpio.StartsWith("[");
+        if (eraArregloRaiz)
+        {
+            if (!jsonLimpio.EndsWith("]"))
+            {
+                motivoError = "JSON mal formado: arreglo raíz sin cierre ']'";
+                return false;
+            }
+            jsonLimpio = "{\"pedidos\":" + jsonLimpio + "}";
+        }
+
         try
         {
-            Manifiesto lote = JsonUtility.FromJson<Manifiesto>(json);
+            Manifiesto lote = JsonUtility.FromJson<Manifiesto>(jsonLimpio);
             bool sinPedidos = lote == null || lote.pedidos == null || lote.pedidos.Count == 0;
             if (lote == null || (sinPedidos && lote.total_pallets <= 0))
             {
@@ -1565,6 +2306,11 @@ public class RobotManagerEVE : MonoBehaviour
                     motivoError = "Esquema inválido";
                     return false;
                 }
+
+                if (eraArregloRaiz && lote.total_pallets <= 0 && tieneCampoValido)
+                {
+                    lote.total_pallets = lote.pedidos.Count;
+                }
             }
 
             loteValido = lote;
@@ -1572,7 +2318,7 @@ public class RobotManagerEVE : MonoBehaviour
         }
         catch (Exception ex)
         {
-            motivoError = ex.Message;
+            motivoError = "JSON mal formado: " + ex.Message;
             return false;
         }
     }
@@ -1581,21 +2327,48 @@ public class RobotManagerEVE : MonoBehaviour
     {
         try
         {
-            if (string.IsNullOrEmpty(rutaArchivo) || !File.Exists(rutaArchivo))
+            if (string.IsNullOrWhiteSpace(rutaArchivo))
             {
-                DashboardUI.Instance?.MostrarPopUpRechazo("Esquema inválido");
+                const string msgRutaVacia = "Ruta inválida: no se especificó ningún archivo JSON.";
+                Debug.LogWarning($"[EVE Ingesta JSON]: {msgRutaVacia}");
+                GestorAudioSCADA.Instance?.ReproducirBloqueoIngestaJSON();
+                DashboardUI.Instance?.RegistrarLog($"<color=#EF4444>[INGESTA ERP]:</color> {msgRutaVacia}");
+                DashboardUI.Instance?.MostrarPopUpRechazo(msgRutaVacia);
                 return;
             }
 
-            string json = File.ReadAllText(rutaArchivo);
-            List<Pedido> fallback = (manifiestoActual != null) ? manifiestoActual.pedidos : null;
+            if (!File.Exists(rutaArchivo))
+            {
+                string msgNoExiste = $"Ruta inválida: archivo no encontrado ({Path.GetFileName(rutaArchivo)}).";
+                Debug.LogWarning($"[EVE Ingesta JSON]: {msgNoExiste} Ruta='{rutaArchivo}'");
+                GestorAudioSCADA.Instance?.ReproducirBloqueoIngestaJSON();
+                DashboardUI.Instance?.RegistrarLog($"<color=#EF4444>[INGESTA ERP]:</color> {msgNoExiste}");
+                DashboardUI.Instance?.MostrarPopUpRechazo(msgNoExiste);
+                return;
+            }
+
+            string json;
+            using (var reader = new StreamReader(rutaArchivo, Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+            {
+                json = reader.ReadToEnd();
+            }
+            json = string.IsNullOrEmpty(json) ? string.Empty : json.TrimStart('\uFEFF').Trim();
+
+            List<Pedido> fallback = (plantillaPedidosFisicos != null && plantillaPedidosFisicos.Count > 0)
+                ? plantillaPedidosFisicos
+                : (manifiestoActual != null ? manifiestoActual.pedidos : null);
+
             if (!TryParsearYValidarManifiesto(json, fallback, out Manifiesto lote, out string motivoError))
             {
-                if (!string.IsNullOrEmpty(motivoError) && motivoError != "Esquema inválido")
-                {
-                    Debug.LogWarning($"[EVE Ingesta JSON]: Error procesando '{rutaArchivo}': {motivoError}");
-                }
-                DashboardUI.Instance?.MostrarPopUpRechazo("Esquema inválido");
+                string diagnostico = !string.IsNullOrEmpty(motivoError) ? motivoError : "Esquema inválido";
+                string etiquetaPopup = diagnostico.StartsWith("JSON mal formado", StringComparison.OrdinalIgnoreCase)
+                    ? "JSON mal formado"
+                    : "Esquema inválido";
+
+                Debug.LogWarning($"[EVE Ingesta JSON]: Error procesando '{rutaArchivo}': {diagnostico}");
+                GestorAudioSCADA.Instance?.ReproducirBloqueoIngestaJSON();
+                DashboardUI.Instance?.RegistrarLog($"<color=#EF4444>[INGESTA ERP]:</color> Rechazo de '{Path.GetFileName(rutaArchivo)}' — {diagnostico}");
+                DashboardUI.Instance?.MostrarPopUpRechazo(etiquetaPopup);
                 return;
             }
 
@@ -1603,8 +2376,11 @@ public class RobotManagerEVE : MonoBehaviour
         }
         catch (Exception ex)
         {
-            Debug.LogWarning($"[EVE Ingesta JSON]: Error procesando '{rutaArchivo}': {ex.Message}");
-            DashboardUI.Instance?.MostrarPopUpRechazo("Esquema inválido");
+            string detalleEx = $"Error leyendo archivo: {ex.Message}";
+            Debug.LogWarning($"[EVE Ingesta JSON]: Error procesando '{rutaArchivo}': {detalleEx}");
+            GestorAudioSCADA.Instance?.ReproducirBloqueoIngestaJSON();
+            DashboardUI.Instance?.RegistrarLog($"<color=#EF4444>[INGESTA ERP]:</color> {detalleEx}");
+            DashboardUI.Instance?.MostrarPopUpRechazo("Ruta inválida");
         }
     }
 
@@ -1612,13 +2388,20 @@ public class RobotManagerEVE : MonoBehaviour
         int palletsEnColaActual,
         int nuevosPallets,
         float horaTurnoActual,
-        bool flotaEscaladaDualActual = false)
+        bool flotaEscaladaDualActual = false,
+        int amrsOperativosDisponibles = 2,
+        bool bloqueadoPorFaltaSoporte = false,
+        string motivoBloqueoSoporte = "")
     {
-        float horasRestantesRaw = Mathf.Max(0.5f, 8.0f - horaTurnoActual);
-        float horasRestantes = Mathf.Clamp(horasRestantesRaw, 4.5f, 5.0f);
+        float horasRestantes = RelojSimuladorTurno.CalcularHorasRestantesDesde(horaTurnoActual);
+        string horaFormateada = RelojSimuladorTurno.FormatearHoraRelojNocturno(horaTurnoActual);
+        int cuposPisoViva = Mathf.Clamp(amrsOperativosDisponibles, 0, 2);
 
-        float capacidad1AMR = 40f * horasRestantes;
-        float capacidad2AMRs = 80f * horasRestantes;
+        float capacidad1AMR = (cuposPisoViva >= 1 ? 40f : 0f) * horasRestantes;
+        float capacidad2AMRs = cuposPisoViva >= 2 ? (80f * horasRestantes) : capacidad1AMR;
+        int cupoDisponible = (bloqueadoPorFaltaSoporte || cuposPisoViva == 0)
+            ? 0
+            : Mathf.Max(0, Mathf.FloorToInt(capacidad2AMRs) - palletsEnColaActual);
 
         if (nuevosPallets <= 0)
         {
@@ -1627,6 +2410,7 @@ public class RobotManagerEVE : MonoBehaviour
                 Decision = DecisionAdmisionSLA.Invalido,
                 NuevosPallets = nuevosPallets,
                 ProyeccionCola = palletsEnColaActual,
+                CupoDisponibleActual = cupoDisponible,
                 HorasRestantes = horasRestantes,
                 Capacidad1AMR = capacidad1AMR,
                 Capacidad2AMRs = capacidad2AMRs,
@@ -1638,29 +2422,57 @@ public class RobotManagerEVE : MonoBehaviour
 
         int proyeccionCola = palletsEnColaActual + nuevosPallets;
 
+        if (bloqueadoPorFaltaSoporte || cuposPisoViva == 0)
+        {
+            string causa = !string.IsNullOrEmpty(motivoBloqueoSoporte)
+                ? motivoBloqueoSoporte
+                : "Unidad de soporte/reserva perdida o flota degradada en turno";
+            string feedbackBloqueo = $"[BLOQUEO DE ADMISIÓN — MODO CONTINUIDAD] Lote rechazado (+{nuevosPallets} pal | Cola activa: {palletsEnColaActual} pal).\n" +
+                                     $"Cupo máximo disponible actual: 0 pallets.\n" +
+                                     $"Política de tiempo: Reloj oficial {horaFormateada} (restan {RelojSimuladorTurno.FormatearDuracionHMS(horasRestantes)} hasta {RelojSimuladorTurno.HoraCierreTurnoTexto} | recarga inductiva 2h).\n" +
+                                     $"Política de peso: Rango industrial 850–1250 kg (base {Pedido.PesoReferenciaBaseKg:F0} kg/pallet).\n" +
+                                     $"Causa: {causa}.\n" +
+                                     $"Flota viva concluye cola asignada sin admitir nuevos pedidos.";
+            return new ResultadoEvaluacionSLA
+            {
+                Decision = DecisionAdmisionSLA.Rechazado,
+                NuevosPallets = nuevosPallets,
+                ProyeccionCola = proyeccionCola,
+                CupoDisponibleActual = 0,
+                HorasRestantes = horasRestantes,
+                Capacidad1AMR = capacidad1AMR,
+                Capacidad2AMRs = capacidad2AMRs,
+                AMRRequeridos = 3,
+                ETAHoras = 0f,
+                FeedbackTecnico = feedbackBloqueo
+            };
+        }
+
         if (proyeccionCola <= capacidad1AMR)
         {
-            float tasaActual = flotaEscaladaDualActual ? 80f : 40f;
+            float tasaActual = (flotaEscaladaDualActual && cuposPisoViva >= 2) ? 80f : 40f;
             return new ResultadoEvaluacionSLA
             {
                 Decision = DecisionAdmisionSLA.Aprobado1AMR,
                 NuevosPallets = nuevosPallets,
                 ProyeccionCola = proyeccionCola,
+                CupoDisponibleActual = cupoDisponible,
                 HorasRestantes = horasRestantes,
                 Capacidad1AMR = capacidad1AMR,
                 Capacidad2AMRs = capacidad2AMRs,
-                AMRRequeridos = flotaEscaladaDualActual ? 2 : 1,
+                AMRRequeridos = (flotaEscaladaDualActual && cuposPisoViva >= 2) ? 2 : 1,
                 ETAHoras = proyeccionCola / tasaActual,
                 FeedbackTecnico = string.Empty
             };
         }
-        else if (proyeccionCola <= capacidad2AMRs)
+        else if (cuposPisoViva >= 2 && proyeccionCola <= capacidad2AMRs)
         {
             return new ResultadoEvaluacionSLA
             {
                 Decision = DecisionAdmisionSLA.EscaladoDual2AMRs,
                 NuevosPallets = nuevosPallets,
                 ProyeccionCola = proyeccionCola,
+                CupoDisponibleActual = cupoDisponible,
                 HorasRestantes = horasRestantes,
                 Capacidad1AMR = capacidad1AMR,
                 Capacidad2AMRs = capacidad2AMRs,
@@ -1671,15 +2483,22 @@ public class RobotManagerEVE : MonoBehaviour
         }
         else
         {
-            int amrRequeridos = Mathf.CeilToInt(proyeccionCola / capacidad1AMR);
-            string feedback = $"[REPORTE SLA] Lote rechazado (+{nuevosPallets} pal | Proyección: {proyeccionCola} pal).\n" +
-                              $"Techo actual (2 AMRs @ 80 pal/h en {horasRestantes:F1}h): {capacidad2AMRs:F0} pallets.\n" +
+            float capacidadUnitariaReal = 40f * Mathf.Max(0.1f, horasRestantes);
+            int amrRequeridos = Mathf.Max(cuposPisoViva + 1, Mathf.CeilToInt(proyeccionCola / capacidadUnitariaReal));
+            float cargaNominalToneladas = (nuevosPallets * Pedido.PesoReferenciaBaseKg) / 1000f;
+            float cargaMinToneladas = (nuevosPallets * Pedido.PesoMinimoIndustrialKg) / 1000f;
+            float cargaMaxToneladas = (nuevosPallets * Pedido.PesoMaximoIndustrialKg) / 1000f;
+            string feedback = $"[REPORTE SLA — EXCEDE CAPACIDAD ACTUAL] Lote rechazado (+{nuevosPallets} pal | Cola actual: {palletsEnColaActual} pal | Proyección: {proyeccionCola} pal).\n" +
+                              $"Cupo máximo disponible actual: {cupoDisponible} pallets.\n" +
+                              $"Política de tiempo: Reloj oficial {horaFormateada} (restan {RelojSimuladorTurno.FormatearDuracionHMS(horasRestantes)} hasta {RelojSimuladorTurno.HoraCierreTurnoTexto} | techo operativo: {capacidad2AMRs:F0} pallets | recarga inductiva 2h).\n" +
+                              $"Política de peso: Rango industrial 850–1250 kg (base {Pedido.PesoReferenciaBaseKg:F0} kg/pallet | lote ≈ {cargaNominalToneladas:F1} t, rango {cargaMinToneladas:F1}–{cargaMaxToneladas:F1} t).\n" +
                               $"Flota requerida: {amrRequeridos} AMRs en piso + 1 AMR soporte ({amrRequeridos + 1} totales).";
             return new ResultadoEvaluacionSLA
             {
                 Decision = DecisionAdmisionSLA.Rechazado,
                 NuevosPallets = nuevosPallets,
                 ProyeccionCola = proyeccionCola,
+                CupoDisponibleActual = cupoDisponible,
                 HorasRestantes = horasRestantes,
                 Capacidad1AMR = capacidad1AMR,
                 Capacidad2AMRs = capacidad2AMRs,
@@ -1690,11 +2509,234 @@ public class RobotManagerEVE : MonoBehaviour
         }
     }
 
+    public int CalcularCupoMaximoDisponibleActual(
+        out float capacidadTechoTotal,
+        out int amrsPisoDisponibles,
+        out bool bloqueoAdmision,
+        out string motivoBloqueo)
+    {
+        ObtenerEstadoFlotaReal(out amrsPisoDisponibles, out _);
+        float horasRestantes = RelojSimuladorTurno.HorasRestantesHastaCierre;
+        int cuposPisoViva = Mathf.Clamp(amrsPisoDisponibles, 0, 2);
+        capacidadTechoTotal = cuposPisoViva >= 2 ? (80f * horasRestantes) : ((cuposPisoViva >= 1 ? 40f : 0f) * horasRestantes);
+
+        bool bloqueoSoporte = admisionNuevosPedidosBloqueada ||
+                              (TieneFlotaAsignadaEnEscena() && TotalIncidentesCriticosTurno > 0 &&
+                               (contadorFallasHardwareTurno > 0 || !HayUnidadSoporteDisponible()));
+
+        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica)
+        {
+            bloqueoAdmision = true;
+            motivoBloqueo = !string.IsNullOrEmpty(motivoFaseCritica) ? motivoFaseCritica : "Cierre total de turno (0 AMRs operativos).";
+            return 0;
+        }
+
+        if (bloqueoSoporte || cuposPisoViva == 0)
+        {
+            bloqueoAdmision = true;
+            motivoBloqueo = !string.IsNullOrEmpty(motivoBloqueoAdmision) ? motivoBloqueoAdmision : "Soporte/reserva perdido o flota degradada.";
+            return 0;
+        }
+
+        int cupo = Mathf.Max(0, Mathf.FloorToInt(capacidadTechoTotal) - palletsEnColaWMS);
+        if (RelojSimuladorTurno.TurnoSuperoCierre || cupo <= 0)
+        {
+            bloqueoAdmision = true;
+            motivoBloqueo = "Capacidad horaria del turno agotada (cupo disponible: 0 pallets).";
+            return 0;
+        }
+
+        bloqueoAdmision = false;
+        motivoBloqueo = string.Empty;
+        return cupo;
+    }
+
+    public bool PuedeRecibirNuevosPedidos(out int cupoMaximoDisponible, out string motivoBloqueo)
+    {
+        cupoMaximoDisponible = CalcularCupoMaximoDisponibleActual(out _, out _, out bool bloqueo, out motivoBloqueo);
+        return !bloqueo && cupoMaximoDisponible > 0;
+    }
+
+    public static float CalcularTiempoCicloReferenciaSeg(float pesoKg)
+    {
+        float pesoAplicado = pesoKg > 0f ? pesoKg : Pedido.PesoReferenciaBaseKg;
+        float vIda = VelocidadNominalFlota;
+        float vCarga = Mathf.Max(0.5f, vIda - (pesoAplicado * 0.002f));
+        return (DistanciaCicloReferenciaTramoM / vIda) + (DistanciaCicloReferenciaTramoM / vCarga) + TiempoManiobraReferenciaSeg;
+    }
+
+    public static float CalcularFactorMasaCiclo(float pesoKg, bool modoDegradacion = false)
+    {
+        float cicloBase = CalcularTiempoCicloReferenciaSeg(Pedido.PesoReferenciaBaseKg);
+        float cicloActual = CalcularTiempoCicloReferenciaSeg(pesoKg);
+        float factor = cicloActual > 0f ? Mathf.Min(1.0f, cicloBase / cicloActual) : 1.0f;
+        if (modoDegradacion)
+        {
+            factor *= 0.50f;
+        }
+        return Mathf.Clamp01(factor);
+    }
+
+    public static float CalcularFactorEnergiaLiFePO4(float bateriaPct, RobotAMR.EstadoRobot estado = RobotAMR.EstadoRobot.Inactivo)
+    {
+        if (estado == RobotAMR.EstadoRobot.Apagado ||
+            estado == RobotAMR.EstadoRobot.FueraDeServicio_Danado ||
+            estado == RobotAMR.EstadoRobot.Interrumpido)
+        {
+            return 0f;
+        }
+
+        float u = Mathf.Clamp01((bateriaPct - RobotAMR.UmbralSeguridadLiFePO4) / RobotAMR.VentanaRecargaNominalPct);
+        return Mathf.Clamp(0.70f + (0.60f * u), 0.50f, 1.00f);
+    }
+
+    public static float CalcularFactorHolguraTemporalSLA(int palletsCola, float horasRestantes, int amrsActivos = 1)
+    {
+        if (palletsCola <= 0) return 1.0f;
+        int n = Mathf.Clamp(amrsActivos, 1, 2);
+        float capacidadNominal = TasaNominalPalletHora1AMR * n * Mathf.Max(0f, horasRestantes);
+        return capacidadNominal <= 0f ? 0f : Mathf.Min(1.0f, capacidadNominal / palletsCola);
+    }
+
+    public static float CalcularEficienciaUnitariaAMR(
+        float pesoKg,
+        float bateriaPct,
+        int palletsCola,
+        float horasRestantes,
+        int amrsActivos = 1,
+        RobotAMR.EstadoRobot estado = RobotAMR.EstadoRobot.Inactivo,
+        bool modoDegradacion = false)
+    {
+        float eficiencia = 100.0f
+            * CalcularFactorMasaCiclo(pesoKg, modoDegradacion)
+            * CalcularFactorEnergiaLiFePO4(bateriaPct, estado)
+            * CalcularFactorHolguraTemporalSLA(palletsCola, horasRestantes, amrsActivos);
+        return Mathf.Clamp(eficiencia, 0.0f, 100.0f);
+    }
+
+    public static float CalcularEficienciaPromedioDual(float eficienciaAMR01, float eficienciaAMR02)
+    {
+        return (eficienciaAMR01 + eficienciaAMR02) * 0.5f;
+    }
+
+    private static float CalcularPesoEvaluacionLote(Manifiesto lote)
+    {
+        if (lote == null || lote.pedidos == null || lote.pedidos.Count == 0)
+        {
+            return Pedido.PesoReferenciaBaseKg;
+        }
+
+        float suma = 0f;
+        int validos = 0;
+        bool todosPesados = true;
+        for (int i = 0; i < lote.pedidos.Count; i++)
+        {
+            Pedido p = lote.pedidos[i];
+            if (p == null || p.peso_kg <= 0f) continue;
+            suma += p.peso_kg;
+            validos++;
+            if (p.peso_kg < 1150f)
+            {
+                todosPesados = false;
+            }
+        }
+
+        if (validos == 0) return Pedido.PesoReferenciaBaseKg;
+        return todosPesados ? (suma / validos) : Pedido.PesoReferenciaBaseKg;
+    }
+
+    public void EvaluarEficienciaOperativaYEscalamiento(Pedido pedidoRecienAsignado = null, bool permitirDespachoInmediato = true)
+    {
+        float horasRestantes = RelojSimuladorTurno.HorasRestantesHastaCierre;
+
+        float peso1 = (robotAMR_01 != null && robotAMR_01.PedidoActual != null && robotAMR_01.PedidoActual.peso_kg > 0f)
+            ? robotAMR_01.PedidoActual.peso_kg
+            : ((pedidoRecienAsignado != null && pedidoRecienAsignado.peso_kg > 0f)
+                ? pedidoRecienAsignado.peso_kg
+                : Pedido.PesoReferenciaBaseKg);
+        float soc1 = robotAMR_01 != null ? robotAMR_01.bateriaActual : 80.0f;
+        RobotAMR.EstadoRobot est1 = robotAMR_01 != null ? robotAMR_01.estadoActual : RobotAMR.EstadoRobot.Inactivo;
+        bool deg1 = robotAMR_01 != null && robotAMR_01.EnPotenciaReducidaBateria;
+
+        float peso2 = (robotAMR_02 != null && robotAMR_02.PedidoActual != null && robotAMR_02.PedidoActual.peso_kg > 0f)
+            ? robotAMR_02.PedidoActual.peso_kg
+            : ((pedidoRecienAsignado != null && pedidoRecienAsignado.peso_kg >= 1150f)
+                ? pedidoRecienAsignado.peso_kg
+                : Pedido.PesoReferenciaBaseKg);
+        float soc2 = robotAMR_02 != null ? robotAMR_02.bateriaActual : 80.0f;
+        RobotAMR.EstadoRobot est2 = robotAMR_02 != null ? robotAMR_02.estadoActual : RobotAMR.EstadoRobot.Inactivo;
+        bool deg2 = robotAMR_02 != null && robotAMR_02.EnPotenciaReducidaBateria;
+
+        float eta1Single = CalcularEficienciaUnitariaAMR(peso1, soc1, palletsEnColaWMS, horasRestantes, 1, est1, deg1);
+        ObtenerEstadoFlotaReal(out int amrsPisoDisponibles, out _);
+
+        if (!flotaEscaladaDual && !operacionDetenidaPorSeguridad && !turnoEnFaseCritica &&
+            palletsEnColaWMS > 0 && amrsPisoDisponibles >= 2 && eta1Single < UmbralEficienciaSegundoAMR)
+        {
+            flotaEscaladaDual = true;
+            DashboardUI.Instance?.ConfigurarReservaAMR02(false);
+            DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(true, "<color=#38BDF8>SOPORTE / RELEVO 24/7 (80% SoC)</color>");
+            DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[EFICIENCIA 1 AMR]:</color> η₁ = {eta1Single:F1}% (<{UmbralEficienciaSegundoAMR:F0}%). Activando AMR-02 en apoyo de piso.");
+
+            if (permitirDespachoInmediato && turnoIniciado && palletsEnColaWMS > ContarMisionesEnVuelo())
+            {
+                DespacharColaDisponible(robotAMR_02);
+            }
+        }
+
+        if (flotaEscaladaDual)
+        {
+            EficienciaUnitariaAMR01 = CalcularEficienciaUnitariaAMR(peso1, soc1, palletsEnColaWMS, horasRestantes, 2, est1, deg1);
+            EficienciaUnitariaAMR02 = CalcularEficienciaUnitariaAMR(peso2, soc2, palletsEnColaWMS, horasRestantes, 2, est2, deg2);
+            EficienciaPromedioDual = CalcularEficienciaPromedioDual(EficienciaUnitariaAMR01, EficienciaUnitariaAMR02);
+
+            if (palletsEnColaWMS > 0 && EficienciaPromedioDual < UmbralEficienciaDualBuzon)
+            {
+                AlertaEficienciaDualActiva = true;
+                string relojTexto = RelojSimuladorTurno.HoraActualFormateada;
+                UltimoDiagnosticoEficienciaDual =
+                    $"[EFICIENCIA DUAL BAJA — {relojTexto}] Promedio conjunto 2 AMRs: {EficienciaPromedioDual:F1}% (umbral < {UmbralEficienciaDualBuzon:F1}%).\n" +
+                    $"AMR-01: {EficienciaUnitariaAMR01:F1}% ({peso1:F0} kg | {soc1:F1}% SoC) | AMR-02: {EficienciaUnitariaAMR02:F1}% ({peso2:F0} kg | {soc2:F1}% SoC).\n" +
+                    $"Cola activa: {palletsEnColaWMS} pal | Restan {RelojSimuladorTurno.FormatearDuracionHMS(horasRestantes)} hasta {RelojSimuladorTurno.HoraCierreTurnoTexto}.\n" +
+                    "Acción: Operación continúa normalmente con la flota activa en piso manteniendo a AMR-03 en soporte/relevo.";
+
+                if (!alertaEficienciaDualReportadaEnEpisodio)
+                {
+                    alertaEficienciaDualReportadaEnEpisodio = true;
+                    DashboardUI.Instance?.RegistrarFeedbackSupervisor(UltimoDiagnosticoEficienciaDual);
+                    DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B>[EFICIENCIA DUAL]:</color> Promedio 2 AMRs en {EficienciaPromedioDual:F1}% (<{UmbralEficienciaDualBuzon:F0}%). Diagnóstico enviado al Buzón; operación continúa.");
+                }
+            }
+            else if (EficienciaPromedioDual >= UmbralEficienciaDualBuzon + 3.0f || palletsEnColaWMS == 0)
+            {
+                AlertaEficienciaDualActiva = false;
+                alertaEficienciaDualReportadaEnEpisodio = false;
+            }
+        }
+        else
+        {
+            EficienciaUnitariaAMR01 = eta1Single;
+            EficienciaUnitariaAMR02 = CalcularEficienciaUnitariaAMR(Pedido.PesoReferenciaBaseKg, soc2, 0, horasRestantes, 1, est2, deg2);
+            EficienciaPromedioDual = EficienciaUnitariaAMR01;
+            AlertaEficienciaDualActiva = false;
+            alertaEficienciaDualReportadaEnEpisodio = false;
+        }
+    }
+
     public void EvaluarIngestaAutonoma(Manifiesto nuevoLote)
     {
         if (nuevoLote == null)
         {
             UltimaEvaluacionSLA = default;
+            return;
+        }
+
+        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica)
+        {
+            GestorAudioSCADA.Instance?.ReproducirBloqueoIngestaJSON();
+            DashboardUI.Instance?.RegistrarLog("<color=#EF4444>[INGESTA BLOQUEADA]:</color> Cierre total de turno (0 AMRs operativos). Detalle en Buzón.");
+            DashboardUI.Instance?.MostrarPopUpExcedeCapacidadActual(0, 0, "Admisión bloqueada");
+            NotificarCambioEstadoAdmisionJSON();
             return;
         }
 
@@ -1708,7 +2750,39 @@ public class RobotManagerEVE : MonoBehaviour
             ? nuevoLote.total_pallets
             : (nuevoLote.pedidos != null ? nuevoLote.pedidos.Count : 0);
 
-        ResultadoEvaluacionSLA eval = CalcularEvaluacionSLA(palletsEnColaWMS, nuevosPallets, horaTurnoActual, flotaEscaladaDual);
+        ObtenerEstadoFlotaReal(out int amrsPisoDisponibles, out bool tieneSoporteDedicado);
+        bool bloqueoSoporte = admisionNuevosPedidosBloqueada ||
+                              (TieneFlotaAsignadaEnEscena() && TotalIncidentesCriticosTurno > 0 &&
+                               (contadorFallasHardwareTurno > 0 || !HayUnidadSoporteDisponible()));
+        float horasRestantesReloj = RelojSimuladorTurno.HorasRestantesHastaCierre;
+        float horaOperativaConsulta = RelojSimuladorTurno.DuracionOperativaTurnoHoras - horasRestantesReloj;
+        string relojTexto = RelojSimuladorTurno.HoraActualFormateada;
+
+        ResultadoEvaluacionSLA eval = CalcularEvaluacionSLA(
+            palletsEnColaWMS,
+            nuevosPallets,
+            horaOperativaConsulta,
+            flotaEscaladaDual,
+            amrsPisoDisponibles,
+            bloqueoSoporte,
+            motivoBloqueoAdmision);
+
+        float pesoEval = CalcularPesoEvaluacionLote(nuevoLote);
+        float soc1 = robotAMR_01 != null ? robotAMR_01.bateriaActual : 80.0f;
+        RobotAMR.EstadoRobot est1 = robotAMR_01 != null ? robotAMR_01.estadoActual : RobotAMR.EstadoRobot.Inactivo;
+        bool deg1 = robotAMR_01 != null && robotAMR_01.EnPotenciaReducidaBateria;
+
+        if (eval.Decision == DecisionAdmisionSLA.Aprobado1AMR && amrsPisoDisponibles >= 2)
+        {
+            float eta1Lote = CalcularEficienciaUnitariaAMR(pesoEval, soc1, eval.ProyeccionCola, eval.HorasRestantes, 1, est1, deg1);
+            if (eta1Lote < UmbralEficienciaSegundoAMR)
+            {
+                eval.Decision = DecisionAdmisionSLA.EscaladoDual2AMRs;
+                eval.AMRRequeridos = 2;
+                eval.ETAHoras = eval.ProyeccionCola / 80f;
+            }
+        }
+
         UltimaEvaluacionSLA = eval;
 
         if (eval.Decision == DecisionAdmisionSLA.Invalido) return;
@@ -1720,7 +2794,7 @@ public class RobotManagerEVE : MonoBehaviour
             {
                 id_lote = nuevoLote.id_lote,
                 total_pallets = palletsEnColaWMS,
-                peso_total_kg = palletsEnColaWMS * 850f,
+                peso_total_kg = palletsEnColaWMS * Pedido.PesoReferenciaBaseKg,
                 pedidos = new List<Pedido>(plantillaPedidosFisicos)
             };
 
@@ -1729,25 +2803,27 @@ public class RobotManagerEVE : MonoBehaviour
 
             if (!flotaEscaladaDual)
             {
-                DashboardUI.Instance?.ConfigurarReservaAMR02(true);
+                DashboardUI.Instance?.ConfigurarReservaAMR02(tieneSoporteDedicado);
                 DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(false);
             }
 
             if (sesionOperativaIniciada || turnoIniciado)
             {
                 turnoIniciado = true;
-                if (!enSaltoTemporal)
-                {
-                    DespacharColaDisponible();
-                }
+                DespacharColaDisponible();
             }
 
+            EvaluarEficienciaOperativaYEscalamiento(null, permitirDespachoInmediato: false);
+
+            string detalleSoporte = tieneSoporteDedicado ? "Soporte: AMR-02 (Reserva 80%)" : "Flota activa: 2 AMRs en piso";
             DashboardUI.Instance?.MostrarPopUpEjecutivoSLA(
                 "<color=#10B981>APROBADO (1 AMR)</color>",
-                $"Lote: +{nuevosPallets} | Cola Total: {eval.ProyeccionCola} pallets (SLA: 40 pal/h)\nPiso: AMR-01 | Soporte: AMR-02 (Reserva 80%) | ETA: {eval.ETAHoras:F2} h",
+                $"Lote: +{nuevosPallets} | Cola: {eval.ProyeccionCola} pal (SLA: 40 pal/h | {relojTexto}, {RelojSimuladorTurno.FormatearDuracionHMS(eval.HorasRestantes)} rest.)\nPiso: AMR-01 | {detalleSoporte} | ETA: {eval.ETAHoras:F2} h",
                 4.5f
             );
-            DashboardUI.Instance?.RegistrarLog($"<color=#10B981>[SLA ADMISIÓN]:</color> Aprobado +{nuevosPallets} pallets (Cola WMS: {eval.ProyeccionCola}). Operación 1 AMR (ETA: {eval.ETAHoras:F2}h).");
+            DashboardUI.Instance?.RegistrarLog($"<color=#10B981>[SLA ADMISIÓN]:</color> Aprobado +{nuevosPallets} pallets a las {relojTexto} (Cola WMS: {eval.ProyeccionCola}). Operación 1 AMR (ETA: {eval.ETAHoras:F2}h).");
+            GestorAudioSCADA.Instance?.ReproducirIngresoPermitidoJSON();
+            NotificarCambioEstadoAdmisionJSON();
         }
         else if (eval.Decision == DecisionAdmisionSLA.EscaladoDual2AMRs)
         {
@@ -1757,7 +2833,7 @@ public class RobotManagerEVE : MonoBehaviour
             {
                 id_lote = nuevoLote.id_lote,
                 total_pallets = palletsEnColaWMS,
-                peso_total_kg = palletsEnColaWMS * 850f,
+                peso_total_kg = palletsEnColaWMS * Pedido.PesoReferenciaBaseKg,
                 pedidos = new List<Pedido>(plantillaPedidosFisicos)
             };
 
@@ -1765,34 +2841,51 @@ public class RobotManagerEVE : MonoBehaviour
             FindFirstObjectByType<GeneradorTablaManifiesto>(FindObjectsInactive.Include)?.AgregarLoteAManifiesto(plantillaPedidosFisicos, nuevosPallets, palletsEnColaWMS);
 
             DashboardUI.Instance?.ConfigurarReservaAMR02(false);
-            DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(true, "<color=#38BDF8>SOPORTE / RELEVO 24/7 (80% SoC)</color>");
+            DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(tieneSoporteDedicado, "<color=#38BDF8>SOPORTE / RELEVO 24/7 (80% SoC)</color>");
 
             if (sesionOperativaIniciada || turnoIniciado)
             {
                 turnoIniciado = true;
-                if (!enSaltoTemporal)
-                {
-                    DespacharColaDisponible();
-                }
+                DespacharColaDisponible();
             }
 
+            Pedido referenciaLote = pesoEval >= 1150f ? new Pedido { peso_kg = pesoEval } : null;
+            EvaluarEficienciaOperativaYEscalamiento(referenciaLote, permitirDespachoInmediato: false);
+
+            string tituloDual = tieneSoporteDedicado
+                ? "<color=#38BDF8>ESCALADO DUAL (2 AMRs + AMR-03)</color>"
+                : "<color=#38BDF8>FLOTA DUAL ACTIVA (2 AMRs REALES)</color>";
+            string detalleSoporteDual = tieneSoporteDedicado ? " | Soporte: AMR-03" : " (Sin 3.er AMR de reserva)";
             DashboardUI.Instance?.MostrarPopUpEjecutivoSLA(
-                "<color=#38BDF8>ESCALADO DUAL (2 AMRs + AMR-03)</color>",
-                $"Cola Total: {eval.ProyeccionCola} pallets | SLA Dual: 80 pal/h\nPiso: AMR-01 + AMR-02 activos | Soporte: AMR-03 | ETA: {eval.ETAHoras:F2} h",
+                tituloDual,
+                $"Cola: {eval.ProyeccionCola} pal | SLA Dual: 80 pal/h ({relojTexto}, {RelojSimuladorTurno.FormatearDuracionHMS(eval.HorasRestantes)} rest.)\nPiso: AMR-01 + AMR-02 activos{detalleSoporteDual} | ETA: {eval.ETAHoras:F2} h",
                 4.5f
             );
-            DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[SLA ESCALAMIENTO]:</color> Despacho dual activado (AMR-01 + AMR-02 en piso, AMR-03 soporte). Cola WMS: {eval.ProyeccionCola} pallets (ETA: {eval.ETAHoras:F2}h).");
+            DashboardUI.Instance?.RegistrarLog($"<color=#38BDF8>[SLA ESCALAMIENTO]:</color> Despacho dual activado a las {relojTexto} (AMR-01 + AMR-02 en piso{(tieneSoporteDedicado ? ", AMR-03 soporte" : string.Empty)}). Cola WMS: {eval.ProyeccionCola} pallets (ETA: {eval.ETAHoras:F2}h).");
+            GestorAudioSCADA.Instance?.ReproducirIngresoPermitidoJSON();
+            NotificarCambioEstadoAdmisionJSON();
         }
         else
         {
-            DashboardUI.Instance?.RegistrarLog("Pedido rechazado, feedback adjuntado.");
+            GestorAudioSCADA.Instance?.ReproducirBloqueoIngestaJSON();
+            bool esBloqueo = admisionNuevosPedidosBloqueada || amrsPisoDisponibles == 0 || eval.CupoDisponibleActual <= 0;
+            string avisoTerminal = esBloqueo
+                ? "<color=#F59E0B>[INGESTA BLOQUEADA]:</color> Sin margen disponible o soporte bloqueado. Detalle en Buzón."
+                : $"<color=#EF4444>[INGESTA RECHAZADA]:</color> Lote +{nuevosPallets} pal excede capacidad actual (cupo: {eval.CupoDisponibleActual} pal). Detalle en Buzón.";
+
+            DashboardUI.Instance?.RegistrarLog(avisoTerminal);
             DashboardUI.Instance?.RegistrarFeedbackSupervisor(eval.FeedbackTecnico);
 
-            DashboardUI.Instance?.MostrarPopUpEjecutivoSLA(
-                "<color=#EF4444>RECHAZADO</color>",
-                $"Proyección ({eval.ProyeccionCola} pallets) excede techo SLA (2 AMRs).\nFlota requerida: {eval.AMRRequeridos} AMRs en piso. Feedback en Buzón.",
-                4.5f
-            );
+            if (eval.CupoDisponibleActual > 0)
+            {
+                DashboardUI.Instance?.MostrarPopUpExcedeCapacidadActual(eval.CupoDisponibleActual, nuevosPallets);
+            }
+            else
+            {
+                DashboardUI.Instance?.MostrarPopUpExcedeCapacidadActual(0, nuevosPallets, "Admisión bloqueada");
+            }
+
+            NotificarCambioEstadoAdmisionJSON();
         }
     }
 

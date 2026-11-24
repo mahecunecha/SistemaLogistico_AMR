@@ -62,6 +62,13 @@ public static class ExportadorTelemetriaCSV
             "HoraTurno",
             horaTurno.ToString("F2", inv),
             "Escala 8.00 h");
+        AgregarFila(
+            sb,
+            ref totalFilasExportadas,
+            "RESUMEN_OPERATIVO",
+            "HoraRelojTurno",
+            RelojSimuladorTurno.HoraActualFormateada,
+            $"Formato 24h HH:MM:SS | Restan {RelojSimuladorTurno.TiempoRestanteFormateado} | Cierre {RelojSimuladorTurno.HoraCierreTurnoTexto}");
 
         float velFlota = eve != null ? eve.VelocidadFlotaActual : 3.5f;
         AgregarFila(
@@ -114,12 +121,41 @@ public static class ExportadorTelemetriaCSV
                 "DronSoporteISO",
                 dronOcupado ? "OCUPADO" : "STANDBY",
                 $"CargaAcoplada={dronCarga}");
+
+            AgregarFila(
+                sb,
+                ref totalFilasExportadas,
+                "RESUMEN_OPERATIVO",
+                "TurnoEnFaseCritica",
+                eve.turnoEnFaseCritica ? "TRUE" : "FALSE",
+                eve.operacionDetenidaPorSeguridad ? "OperacionDetenidaPorSeguridad=TRUE" : "OperacionActiva");
+            AgregarFila(
+                sb,
+                ref totalFilasExportadas,
+                "RESUMEN_OPERATIVO",
+                "IncidentesDescargaCritica3",
+                eve.contadorDescargasCriticasTurno.ToString(inv),
+                string.Empty);
+            AgregarFila(
+                sb,
+                ref totalFilasExportadas,
+                "RESUMEN_OPERATIVO",
+                "IncidentesFallaHardware",
+                eve.contadorFallasHardwareTurno.ToString(inv),
+                string.Empty);
+            AgregarFila(
+                sb,
+                ref totalFilasExportadas,
+                "RESUMEN_OPERATIVO",
+                "PalletsEnPasillo",
+                eve.CantidadPalletsEnPasillo.ToString(inv),
+                string.Empty);
         }
 
         sb.AppendLine();
 
         // Sección 2 — Telemetría de Flota AMR (AMR-01, AMR-02, AMR-03)
-        sb.AppendLine("FLOTA_AMR,ID_Robot,Estado_FSM,Bateria_SoC_Pct,Velocidad_Base_mps,Modo_Degradacion,Parada_LiDAR,Carga_Fisica,ID_Pallet,Muelle_Asignado,Slot_LIFO,Pos_X,Pos_Z");
+        sb.AppendLine("FLOTA_AMR,ID_Robot,Estado_FSM,Tipo_Falla,Bateria_SoC_Pct,Velocidad_Base_mps,Modo_Degradacion,Parada_LiDAR,Carga_Fisica,ID_Pallet,Muelle_Asignado,Slot_LIFO,Pos_X,Pos_Z");
         RobotAMR[] flota = new RobotAMR[]
         {
             eve != null ? eve.robotAMR_01 : null,
@@ -142,6 +178,7 @@ public static class ExportadorTelemetriaCSV
                 "FLOTA_AMR",
                 amr.idRobot,
                 amr.estadoActual.ToString(),
+                amr.tipoFallaActual.ToString(),
                 amr.bateriaActual.ToString("F2", inv),
                 amr.VelocidadBase.ToString("F2", inv),
                 amr.ModoDegradacionActivo ? "TRUE" : "FALSE",

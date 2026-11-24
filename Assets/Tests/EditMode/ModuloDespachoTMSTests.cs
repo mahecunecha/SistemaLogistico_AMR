@@ -87,6 +87,10 @@ namespace ProyectoBodega.Tests.EditMode
             Assert.AreEqual(3, tms.MatrizLIFOCamion1.Count);
             Assert.AreEqual(2620f, tms.PesoCamion1, 1e-3f);
             Assert.AreEqual(2, tms.CamionTurnoActual);
+            Assert.Greater(tms.HistorialEstibasTurno.Count, 0);
+            StringAssert.IsMatch(@"^\d{2}:\d{2}:\d{2}$", tms.HistorialEstibasTurno[0].Timestamp);
+            StringAssert.DoesNotContain("AM", tms.HistorialEstibasTurno[0].Timestamp);
+            StringAssert.DoesNotContain("PM", tms.HistorialEstibasTurno[0].Timestamp);
 
             tms.ConsultarMuelleDestino(p4, out int c4, out int s4);
             Assert.AreEqual(2, c4);
@@ -133,6 +137,64 @@ namespace ProyectoBodega.Tests.EditMode
 
             tms.ConsultarMuelleDestino(CrearPedido("PAL-R2", 850f), out int asignadoTrasM2, out int _);
             Assert.AreEqual(3, asignadoTrasM2);
+        }
+
+        [Test]
+        public void EstaMuelleAbiertoParaEntrega_SelladoEInspeccion_BloqueaAsignacionSiTodosCerrados()
+        {
+            Assert.IsTrue(tms.EstaMuelleAbiertoParaEntrega(1));
+            Assert.IsTrue(tms.EstaMuelleAbiertoParaEntrega(2));
+            Assert.IsTrue(tms.EstaMuelleAbiertoParaEntrega(3));
+            Assert.IsTrue(tms.TieneAlgunMuelleAbierto());
+
+            tms.EstablecerCamionSellado(1, true);
+            Assert.IsFalse(tms.EstaMuelleAbiertoParaEntrega(1));
+            Assert.IsTrue(tms.TieneAlgunMuelleAbierto());
+
+            tms.ReportarInspeccionHumanaMuelle(2, out _);
+            Assert.IsFalse(tms.EstaMuelleAbiertoParaEntrega(2));
+            Assert.IsTrue(tms.TieneAlgunMuelleAbierto());
+
+            // Con 1 sellado y 2 en inspección, el único abierto es el 3
+            tms.ConsultarMuelleDestino(CrearPedido("PAL-OPEN3", 850f), out int camionAbierto, out int slotAbierto);
+            Assert.AreEqual(3, camionAbierto);
+            Assert.AreEqual(1, slotAbierto);
+
+            // Al sellar también el 3, ningún muelle queda abierto -> no debe asignar silenciosamente uno cerrado
+            tms.EstablecerCamionSellado(3, true);
+            Assert.IsFalse(tms.TieneAlgunMuelleAbierto());
+            Transform muelleNulo = tms.ConsultarMuelleDestino(CrearPedido("PAL-NONE", 850f), out int camionBloq, out int slotBloq);
+            Assert.IsNull(muelleNulo);
+            Assert.AreEqual(0, camionBloq);
+            Assert.AreEqual(0, slotBloq);
+        }
+
+        [Test]
+        public void ClausurarMuellePorIncidenteAMR_RedirigeAOperativosYReabreConDespejeManual()
+        {
+            GameObject goM1 = CrearObjetoTemporal("Muelle_Camion_01");
+            GameObject goM2 = CrearObjetoTemporal("Muelle_Camion_02");
+            GameObject goM3 = CrearObjetoTemporal("Muelle_Camion_03");
+            tms.muelleCamion01 = goM1.transform;
+            tms.muelleCamion02 = goM2.transform;
+            tms.muelleCamion03 = goM3.transform;
+
+            int sig = tms.ClausurarMuellePorIncidenteAMR(1, "Falla HW de AMR-01 en bahía", out int siguiente);
+            Assert.AreEqual(2, sig);
+            Assert.AreEqual(2, siguiente);
+            Assert.IsTrue(tms.EstaMuelleClausuradoPorIncidente(1));
+            Assert.IsFalse(tms.EstaMuelleAbiertoParaEntrega(1));
+            Assert.AreEqual(2, tms.ContarMuellesAbiertosParaEntrega());
+
+            tms.ConsultarMuelleDestino(CrearPedido("PAL-2OF3", 850f), out int asignado, out int slot);
+            Assert.AreEqual(2, asignado);
+            Assert.AreEqual(1, slot);
+
+            bool reabierto = tms.ConfirmarDespejeHumanoMuelle(1);
+            Assert.IsTrue(reabierto);
+            Assert.IsFalse(tms.EstaMuelleClausuradoPorIncidente(1));
+            Assert.IsTrue(tms.EstaMuelleAbiertoParaEntrega(1));
+            Assert.AreEqual(3, tms.ContarMuellesAbiertosParaEntrega());
         }
     }
 }

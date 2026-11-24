@@ -48,6 +48,8 @@ public class DirectorCinematico : MonoBehaviour
     private readonly Dictionary<RobotAMR, System.Action<RobotAMR.EstadoRobot>> handlersEstadoAMR =
         new Dictionary<RobotAMR, System.Action<RobotAMR.EstadoRobot>>();
 
+    private CinemachineFollow followVCam2;
+    private CinemachineRotationComposer composerVCam2;
     private CinemachineFollow followVCam3;
     private CinemachineRotationComposer composerVCam3;
     private CinemachineFollow followVCam4;
@@ -74,7 +76,50 @@ public class DirectorCinematico : MonoBehaviour
         }
 
         SuscribirFlota(true);
+        ConfigurarCamaraTerceraPersonaEVE();
         StartCoroutine(SecuenciaIntroCinematica());
+    }
+
+    private static RobotManagerEVE ResolverRobotManagerEVE()
+    {
+        if (RobotManagerEVE.Instance != null)
+        {
+            return RobotManagerEVE.Instance;
+        }
+
+        RobotManagerEVE activo = FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Exclude);
+        if (activo != null)
+        {
+            return activo;
+        }
+
+        return FindFirstObjectByType<RobotManagerEVE>(FindObjectsInactive.Include);
+    }
+
+    public void ConfigurarCamaraTerceraPersonaEVE()
+    {
+        if (vcam2_EVE == null) return;
+        if (managerEVE == null || !managerEVE.gameObject.activeInHierarchy) managerEVE = ResolverRobotManagerEVE();
+
+        if (managerEVE != null)
+        {
+            vcam2_EVE.Target.TrackingTarget = managerEVE.transform;
+            vcam2_EVE.Target.LookAtTarget = managerEVE.transform;
+        }
+
+        if (followVCam2 == null) followVCam2 = vcam2_EVE.GetComponent<CinemachineFollow>();
+        if (composerVCam2 == null) composerVCam2 = vcam2_EVE.GetComponent<CinemachineRotationComposer>();
+
+        if (followVCam2 != null)
+        {
+            followVCam2.TrackerSettings.BindingMode = Unity.Cinemachine.TargetTracking.BindingMode.LockToTargetWithWorldUp;
+            followVCam2.FollowOffset = new Vector3(0.0f, 1.25f, -3.50f);
+        }
+
+        if (composerVCam2 != null)
+        {
+            composerVCam2.TargetOffset = new Vector3(0.0f, -1.75f, 3.20f);
+        }
     }
 
     private IEnumerator SecuenciaIntroCinematica()
@@ -353,7 +398,7 @@ public class DirectorCinematico : MonoBehaviour
 
     private void SuscribirFlota(bool suscribir)
     {
-        if (managerEVE == null) managerEVE = FindFirstObjectByType<RobotManagerEVE>();
+        if (managerEVE == null || !managerEVE.gameObject.activeInHierarchy) managerEVE = ResolverRobotManagerEVE();
 
         if (managerEVE != null)
         {
@@ -415,7 +460,7 @@ public class DirectorCinematico : MonoBehaviour
 
     private RobotAMR ObtenerAMRPorIndice(int indiceUnidad)
     {
-        if (managerEVE == null) managerEVE = FindFirstObjectByType<RobotManagerEVE>();
+        if (managerEVE == null || !managerEVE.gameObject.activeInHierarchy) managerEVE = ResolverRobotManagerEVE();
         switch (indiceUnidad)
         {
             case 2:
@@ -511,8 +556,8 @@ public class DirectorCinematico : MonoBehaviour
             {
                 int idx = vistaActual == ModoVistaCamara.AMR02 ? 2 : (vistaActual == ModoVistaCamara.AMR03 ? 3 : 1);
                 RobotAMR objetivoManual = ObtenerAMRPorIndice(idx);
-                if ((objetivoManual == null || objetivoManual.estadoActual == RobotAMR.EstadoRobot.Apagado) &&
-                    amrRelevo != null && amrRelevo.estadoActual != RobotAMR.EstadoRobot.Apagado)
+                if ((objetivoManual == null || objetivoManual.estadoActual == RobotAMR.EstadoRobot.Apagado || objetivoManual.estadoActual == RobotAMR.EstadoRobot.FueraDeServicio_Danado) &&
+                    amrRelevo != null && amrRelevo.estadoActual != RobotAMR.EstadoRobot.Apagado && amrRelevo.estadoActual != RobotAMR.EstadoRobot.FueraDeServicio_Danado)
                 {
                     vistaActual = ObtenerModoPorAMR(amrRelevo);
                 }
@@ -538,6 +583,7 @@ public class DirectorCinematico : MonoBehaviour
         else if (vcam2_EVE != null)
         {
             amrEnfocadoVCam3 = null;
+            ConfigurarCamaraTerceraPersonaEVE();
             vcam2_EVE.Priority = 10;
             Debug.Log("<color=orange>Director:</color> Foco de incidente liberado. Retorno a VCam2 (EVE).");
         }
@@ -559,15 +605,22 @@ public class DirectorCinematico : MonoBehaviour
 
         DesactivarPrioridades();
         amrEnfocadoVCam3 = null;
-        if (vcam2_EVE != null) vcam2_EVE.Priority = 10;
+        if (vcam2_EVE != null)
+        {
+            ConfigurarCamaraTerceraPersonaEVE();
+            vcam2_EVE.Priority = 10;
+        }
         Debug.Log("<color=orange>Director:</color> Transición a VCam2 (EVE).");
     }
 
     private void EvaluarEstadoAMR(RobotAMR amrEmisor, RobotAMR.EstadoRobot estado)
     {
-        if (estado == RobotAMR.EstadoRobot.Apagado || estado == RobotAMR.EstadoRobot.Interrumpido)
+        if (estado == RobotAMR.EstadoRobot.Apagado ||
+            estado == RobotAMR.EstadoRobot.Interrumpido ||
+            estado == RobotAMR.EstadoRobot.FueraDeServicio_Danado)
         {
-            RobotAMR amrIncidente = BuscarAMRPorEstadoPrioritario(RobotAMR.EstadoRobot.Apagado)
+            RobotAMR amrIncidente = BuscarAMRPorEstadoPrioritario(RobotAMR.EstadoRobot.FueraDeServicio_Danado)
+                ?? BuscarAMRPorEstadoPrioritario(RobotAMR.EstadoRobot.Apagado)
                 ?? BuscarAMRPorEstadoPrioritario(RobotAMR.EstadoRobot.Interrumpido);
             if (amrIncidente != null)
             {
@@ -599,7 +652,9 @@ public class DirectorCinematico : MonoBehaviour
 
                 RobotAMR objetivoActivo = amrEmisor != null
                     ? amrEmisor
-                    : ((managerEVE != null && managerEVE.robotEjecutor != null && managerEVE.robotEjecutor.estadoActual != RobotAMR.EstadoRobot.Apagado)
+                    : ((managerEVE != null && managerEVE.robotEjecutor != null &&
+                        managerEVE.robotEjecutor.estadoActual != RobotAMR.EstadoRobot.Apagado &&
+                        managerEVE.robotEjecutor.estadoActual != RobotAMR.EstadoRobot.FueraDeServicio_Danado)
                         ? managerEVE.robotEjecutor
                         : robotAMR);
 
@@ -635,6 +690,7 @@ public class DirectorCinematico : MonoBehaviour
                 DesactivarPrioridades();
                 if (managerEVE != null && managerEVE.turnoIniciado && vcam2_EVE != null)
                 {
+                    ConfigurarCamaraTerceraPersonaEVE();
                     vcam2_EVE.Priority = 10;
                     Debug.Log("<color=orange>Director:</color> AMR recargando. Transición a VCam2 (EVE).");
                 }
@@ -667,6 +723,7 @@ public class DirectorCinematico : MonoBehaviour
                 DesactivarPrioridades();
                 if (managerEVE != null && managerEVE.turnoIniciado && vcam2_EVE != null)
                 {
+                    ConfigurarCamaraTerceraPersonaEVE();
                     vcam2_EVE.Priority = 10;
                     Debug.Log("<color=orange>Director:</color> Transición a VCam2 (EVE - Turno en curso).");
                 }
@@ -760,6 +817,7 @@ public class DirectorCinematico : MonoBehaviour
         else if (managerEVE != null && managerEVE.turnoIniciado && vcam2_EVE != null)
         {
             amrEnfocadoVCam3 = null;
+            ConfigurarCamaraTerceraPersonaEVE();
             vcam2_EVE.Priority = 10;
         }
         else if (vcam1_Menu != null)
@@ -789,7 +847,11 @@ public class DirectorCinematico : MonoBehaviour
         focoIncidenteActivo = false;
         amrEnfocadoVCam3 = null;
         DesactivarPrioridades();
-        if (vcam2_EVE != null) vcam2_EVE.Priority = 20;
+        if (vcam2_EVE != null)
+        {
+            ConfigurarCamaraTerceraPersonaEVE();
+            vcam2_EVE.Priority = 20;
+        }
         DashboardUI.Instance?.RegistrarLog("<color=#38BDF8>[CÁMARA]:</color> Vista manual EVE [Orquestador].");
     }
 
@@ -919,6 +981,11 @@ public class DirectorCinematico : MonoBehaviour
     private void ActualizarEncuadreDinamico()
     {
         float dt = Time.unscaledDeltaTime * 3.5f;
+
+        if (vcam2_EVE != null)
+        {
+            ConfigurarCamaraTerceraPersonaEVE();
+        }
 
         if (vcam3_AMR_Hombro != null)
         {

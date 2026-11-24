@@ -13,6 +13,14 @@ public class GestorAudioSCADA : MonoBehaviour
     [Header("Salida de Audio 2D")]
     public AudioSource fuenteAudio;
 
+    [Header("Salida de Audio Alarma Sonora en Fábrica")]
+    public AudioSource fuenteAlarmaFabrica;
+    [SerializeField] private AudioClip clipAlarmaSonoraFabrica;
+
+    public bool alarmaFabricaActiva { get; private set; } = false;
+    public string motivoAlarmaFabricaActiva { get; private set; } = string.Empty;
+    public event System.Action<bool, string> OnEstadoAlarmaFabricaCambiado;
+
     [Header("Controles UI")]
     public Button btnMuteAudio;
     public TextMeshProUGUI txtBtnMuteAudio;
@@ -30,6 +38,8 @@ public class GestorAudioSCADA : MonoBehaviour
     [SerializeField] private AudioClip clipConfirmacionEntrega;
     [SerializeField] private AudioClip clipAcopleNeumaticoVerde;
     [SerializeField] private AudioClip clipClickUI;
+    [SerializeField] private AudioClip clipBloqueoIngestaJSON;
+    [SerializeField] private AudioClip clipIngresoPermitidoJSON;
 
     [Header("Clips 3D Loop Opcionales (Override)")]
     [SerializeField] private AudioClip clipMotorAMR;
@@ -86,6 +96,8 @@ public class GestorAudioSCADA : MonoBehaviour
     private float ultimoDisparoEntrega = -10f;
     private float ultimoDisparoNeumatico = -10f;
     private float ultimoDisparoClick = -10f;
+    private float ultimoDisparoBloqueoJSON = -10f;
+    private float ultimoDisparoIngresoJSON = -10f;
     private int ultimoFrameToggleMute = -1;
 
     void Awake()
@@ -111,18 +123,36 @@ public class GestorAudioSCADA : MonoBehaviour
             silenciado = PlayerPrefs.GetInt(PrefSilenciado, 0) == 1;
         }
 
+        AudioSource[] fuentesExistentes = GetComponents<AudioSource>();
         if (fuenteAudio == null)
         {
-            fuenteAudio = GetComponent<AudioSource>();
-            if (fuenteAudio == null)
-            {
-                fuenteAudio = gameObject.AddComponent<AudioSource>();
-            }
+            fuenteAudio = fuentesExistentes.Length > 0 ? fuentesExistentes[0] : gameObject.AddComponent<AudioSource>();
         }
         fuenteAudio.playOnAwake = false;
         fuenteAudio.loop = false;
         fuenteAudio.spatialBlend = 0f;
         fuenteAudio.volume = 1f;
+
+        if (fuenteAlarmaFabrica == null)
+        {
+            for (int i = 0; i < fuentesExistentes.Length; i++)
+            {
+                if (fuentesExistentes[i] != null && fuentesExistentes[i] != fuenteAudio)
+                {
+                    fuenteAlarmaFabrica = fuentesExistentes[i];
+                    break;
+                }
+            }
+            if (fuenteAlarmaFabrica == null)
+            {
+                fuenteAlarmaFabrica = gameObject.AddComponent<AudioSource>();
+            }
+        }
+        fuenteAlarmaFabrica.playOnAwake = false;
+        fuenteAlarmaFabrica.loop = true;
+        fuenteAlarmaFabrica.spatialBlend = 0f;
+        fuenteAlarmaFabrica.volume = 0.92f;
+        fuenteAlarmaFabrica.mute = silenciado;
 
         SintetizarClipsFaltantes();
         AplicarVolumenGlobal();
@@ -136,6 +166,11 @@ public class GestorAudioSCADA : MonoBehaviour
 
     void OnDestroy()
     {
+        if (fuenteAlarmaFabrica != null && fuenteAlarmaFabrica.isPlaying)
+        {
+            fuenteAlarmaFabrica.Stop();
+        }
+
         if (Instance == this)
         {
             Instance = null;
@@ -230,6 +265,10 @@ public class GestorAudioSCADA : MonoBehaviour
     {
         volumenMaestro = Mathf.Clamp01(volumenMaestro);
         AudioListener.volume = silenciado ? 0f : volumenMaestro;
+        if (fuenteAlarmaFabrica != null)
+        {
+            fuenteAlarmaFabrica.mute = silenciado;
+        }
         RefrescarControlesUI();
     }
 
@@ -277,6 +316,65 @@ public class GestorAudioSCADA : MonoBehaviour
         ReproducirClipConCooldown(clipClickUI, ref ultimoDisparoClick, 0.03f, 0.35f);
     }
 
+    public void ReproducirBloqueoIngestaJSON()
+    {
+        if (clipBloqueoIngestaJSON == null)
+        {
+            clipBloqueoIngestaJSON = RegistrarClipProcedural(CrearClipBloqueoIngestaJSON());
+        }
+        ReproducirClipConCooldown(clipBloqueoIngestaJSON, ref ultimoDisparoBloqueoJSON, 0.15f, 0.60f);
+    }
+
+    public void ReproducirIngresoPermitidoJSON()
+    {
+        if (clipIngresoPermitidoJSON == null)
+        {
+            clipIngresoPermitidoJSON = RegistrarClipProcedural(CrearClipIngresoPermitidoJSON());
+        }
+        ReproducirClipConCooldown(clipIngresoPermitidoJSON, ref ultimoDisparoIngresoJSON, 0.10f, 0.55f);
+    }
+
+    /// <summary>
+    /// Activa la señal sonora de alarma en fábrica para atención urgente de operario en piso.
+    /// Independiente de la lógica del Buzón y con botón propio de acuse/silencio en HUD.
+    /// </summary>
+    public void ActivarAlarmaSonoraFabrica(string motivo = "Incidente crítico en planta")
+    {
+        alarmaFabricaActiva = true;
+        motivoAlarmaFabricaActiva = string.IsNullOrEmpty(motivo) ? "Incidente crítico en planta" : motivo;
+
+        if (clipAlarmaSonoraFabrica == null)
+        {
+            clipAlarmaSonoraFabrica = RegistrarClipProcedural(CrearClipAlarmaSonoraFabrica());
+        }
+
+        if (Application.isPlaying && fuenteAlarmaFabrica != null && clipAlarmaSonoraFabrica != null)
+        {
+            fuenteAlarmaFabrica.clip = clipAlarmaSonoraFabrica;
+            fuenteAlarmaFabrica.loop = true;
+            fuenteAlarmaFabrica.mute = silenciado;
+            if (!fuenteAlarmaFabrica.isPlaying)
+            {
+                fuenteAlarmaFabrica.Play();
+            }
+        }
+
+        OnEstadoAlarmaFabricaCambiado?.Invoke(true, motivoAlarmaFabricaActiva);
+    }
+
+    public void SilenciarAlarmaFabrica()
+    {
+        alarmaFabricaActiva = false;
+        motivoAlarmaFabricaActiva = string.Empty;
+
+        if (fuenteAlarmaFabrica != null && fuenteAlarmaFabrica.isPlaying)
+        {
+            fuenteAlarmaFabrica.Stop();
+        }
+
+        OnEstadoAlarmaFabricaCambiado?.Invoke(false, string.Empty);
+    }
+
     private void ReproducirClipConCooldown(AudioClip clip, ref float ultimoDisparo, float cooldown, float escalaRelativa)
     {
         if (!Application.isPlaying || silenciado || volumenMaestro <= 0.001f || fuenteAudio == null || clip == null)
@@ -301,6 +399,9 @@ public class GestorAudioSCADA : MonoBehaviour
         if (clipConfirmacionEntrega == null) clipConfirmacionEntrega = RegistrarClipProcedural(CrearClipConfirmacionEntrega());
         if (clipAcopleNeumaticoVerde == null) clipAcopleNeumaticoVerde = RegistrarClipProcedural(CrearClipAcopleNeumaticoVerde());
         if (clipClickUI == null) clipClickUI = RegistrarClipProcedural(CrearClipClickUI());
+        if (clipBloqueoIngestaJSON == null) clipBloqueoIngestaJSON = RegistrarClipProcedural(CrearClipBloqueoIngestaJSON());
+        if (clipIngresoPermitidoJSON == null) clipIngresoPermitidoJSON = RegistrarClipProcedural(CrearClipIngresoPermitidoJSON());
+        if (clipAlarmaSonoraFabrica == null) clipAlarmaSonoraFabrica = RegistrarClipProcedural(CrearClipAlarmaSonoraFabrica());
         if (clipMotorAMR == null) clipMotorAMR = RegistrarClipProcedural(CrearClipLoopMotorAMR());
         if (clipRotoresEVE == null) clipRotoresEVE = RegistrarClipProcedural(CrearClipLoopRotores("SCADA_RotoresEVE", 85f, 18f, 0.28f, 0.055f, 137));
         if (clipRotoresDronSoporte == null) clipRotoresDronSoporte = RegistrarClipProcedural(CrearClipLoopRotores("SCADA_RotoresDronSoporte", 72f, 14f, 0.34f, 0.075f, 251));
@@ -476,6 +577,95 @@ public class GestorAudioSCADA : MonoBehaviour
         }
 
         return ConstruirClipPCM("SCADA_ClickUI", datos);
+    }
+
+    private static AudioClip CrearClipBloqueoIngestaJSON()
+    {
+        const float duracion = 0.190f;
+        int totalMuestras = Mathf.RoundToInt(SampleRate * duracion);
+        float[] datos = new float[totalMuestras];
+        float fase = 0f;
+
+        for (int i = 0; i < totalMuestras; i++)
+        {
+            float t = (float)i / SampleRate;
+            float env = 0f;
+            float freq = 260f;
+
+            if (t <= 0.080f)
+            {
+                freq = 260f;
+                env = EvaluarEnvolvente(t, 0.080f, 0.008f, 0.018f);
+            }
+            else if (t >= 0.095f)
+            {
+                freq = 195f;
+                env = EvaluarEnvolvente(t - 0.095f, 0.095f, 0.008f, 0.022f);
+            }
+
+            fase += 2f * Mathf.PI * freq / SampleRate;
+            float onda = 0.78f * Mathf.Sin(fase) + 0.14f * Mathf.Sin(2f * fase);
+            datos[i] = Mathf.Clamp(onda * 0.36f * env, -1f, 1f);
+        }
+
+        return ConstruirClipPCM("SCADA_BloqueoIngestaJSON", datos);
+    }
+
+    private static AudioClip CrearClipIngresoPermitidoJSON()
+    {
+        const float duracion = 0.180f;
+        int totalMuestras = Mathf.RoundToInt(SampleRate * duracion);
+        float[] datos = new float[totalMuestras];
+        float fase = 0f;
+
+        for (int i = 0; i < totalMuestras; i++)
+        {
+            float t = (float)i / SampleRate;
+            bool segundoTono = t >= 0.082f;
+            float freq = segundoTono ? 987.77f : 659.25f;
+            float tSeg = segundoTono ? (t - 0.082f) : t;
+            float durSeg = segundoTono ? 0.098f : 0.082f;
+            float env = EvaluarEnvolvente(tSeg, durSeg, 0.006f, 0.018f);
+
+            fase += 2f * Mathf.PI * freq / SampleRate;
+            float onda = 0.80f * Mathf.Sin(fase) + 0.14f * Mathf.Sin(2f * fase);
+            datos[i] = Mathf.Clamp(onda * 0.34f * env, -1f, 1f);
+        }
+
+        return ConstruirClipPCM("SCADA_IngresoPermitidoJSON", datos);
+    }
+
+    private static AudioClip CrearClipAlarmaSonoraFabrica()
+    {
+        const float duracion = 1.60f;
+        const float periodoPulso = 0.80f;
+        const float duracionActivaPulso = 0.70f;
+        int totalMuestras = Mathf.RoundToInt(SampleRate * duracion);
+        float[] datos = new float[totalMuestras];
+        float fase = 0f;
+
+        for (int i = 0; i < totalMuestras; i++)
+        {
+            float t = (float)i / SampleRate;
+            float tPulso = t % periodoPulso;
+            float env = EvaluarEnvolvente(tPulso, duracionActivaPulso, 0.018f, 0.035f);
+            if (env <= 0f)
+            {
+                fase = 0f;
+                datos[i] = 0f;
+                continue;
+            }
+
+            float prog = Mathf.Clamp01(tPulso / duracionActivaPulso);
+            float barrido = 0.5f - 0.5f * Mathf.Cos(prog * Mathf.PI * 2f);
+            float freq = Mathf.Lerp(520f, 780f, barrido);
+
+            fase += 2f * Mathf.PI * freq / SampleRate;
+            float onda = 0.65f * Mathf.Sin(fase) + 0.25f * Mathf.Sin(2f * fase) + 0.12f * Mathf.Sin(3f * fase);
+            datos[i] = Mathf.Clamp(onda * 0.46f * env, -1f, 1f);
+        }
+
+        return ConstruirClipPCM("SCADA_AlarmaSonoraFabrica", datos);
     }
 
     private static AudioClip CrearClipLoopMotorAMR()

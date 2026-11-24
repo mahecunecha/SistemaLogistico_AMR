@@ -45,6 +45,12 @@ public class ModuloDespachoTMS : MonoBehaviour
     private readonly bool[] inspeccionHumanaEnCurso = new bool[4];
     private readonly Coroutine[] rutinasInspeccionHumana = new Coroutine[4];
 
+    [Header("Clausura por Falla / Bloqueo en Bahía (Manual)")]
+    private readonly bool[] muelleClausuradoPorIncidente = new bool[4];
+    private readonly string[] motivoClausuraMuelle = new string[4];
+    private bool alertaTodosMuellesCerradosBuzonActiva = false;
+    public event System.Action<int, bool, string> OnEstadoClausuraMuelleCambiado;
+
     [System.Serializable]
     public struct RegistroEstibaTurno
     {
@@ -90,6 +96,73 @@ public class ModuloDespachoTMS : MonoBehaviour
     {
         if (numeroCamion < 1 || numeroCamion > 3) return false;
         return inspeccionHumanaEnCurso[numeroCamion];
+    }
+
+    public bool EstaEnRenovacion(int numeroCamion)
+    {
+        if (numeroCamion < 1 || numeroCamion > 3) return false;
+        return renovacionEnCurso[numeroCamion];
+    }
+
+    public bool EstaMuelleClausuradoPorIncidente(int numeroCamion)
+    {
+        if (numeroCamion < 1 || numeroCamion > 3) return false;
+        return muelleClausuradoPorIncidente[numeroCamion];
+    }
+
+    public string ObtenerMotivoClausuraMuelle(int numeroCamion)
+    {
+        if (numeroCamion < 1 || numeroCamion > 3) return string.Empty;
+        return motivoClausuraMuelle[numeroCamion] ?? string.Empty;
+    }
+
+    public bool TieneAlgunMuelleClausuradoOEnInspeccion(out int primerMuelleAfectado)
+    {
+        for (int i = 1; i <= 3; i++)
+        {
+            if (muelleClausuradoPorIncidente[i] || inspeccionHumanaEnCurso[i])
+            {
+                primerMuelleAfectado = i;
+                return true;
+            }
+        }
+        primerMuelleAfectado = 0;
+        return false;
+    }
+
+    public int ContarMuellesAbiertosParaEntrega()
+    {
+        int abiertos = 0;
+        for (int i = 1; i <= 3; i++)
+        {
+            if (EstaMuelleAbiertoParaEntrega(i)) abiertos++;
+        }
+        return abiertos;
+    }
+
+    public bool EstaMuelleAbiertoParaEntrega(int numeroCamion)
+    {
+        if (numeroCamion < 1 || numeroCamion > 3) return false;
+        return !camionSellado[numeroCamion] &&
+               !renovacionEnCurso[numeroCamion] &&
+               !inspeccionHumanaEnCurso[numeroCamion] &&
+               !muelleClausuradoPorIncidente[numeroCamion];
+    }
+
+    public bool TieneAlgunMuelleAbierto()
+    {
+        return EstaMuelleAbiertoParaEntrega(1) || EstaMuelleAbiertoParaEntrega(2) || EstaMuelleAbiertoParaEntrega(3);
+    }
+
+    public void EstablecerCamionSellado(int numeroCamion, bool sellado)
+    {
+        if (numeroCamion < 1 || numeroCamion > 3) return;
+        camionSellado[numeroCamion] = sellado;
+        ConfigurarPuertaCamion(numeroCamion, sellado);
+        if (!sellado)
+        {
+            alertaTodosMuellesCerradosBuzonActiva = false;
+        }
     }
 
     public float ObtenerPesoCamion(int numeroCamion)
@@ -215,9 +288,17 @@ public class ModuloDespachoTMS : MonoBehaviour
             camionSellado[i] = false;
             inspeccionHumanaEnCurso[i] = false;
             rutinasInspeccionHumana[i] = null;
+            muelleClausuradoPorIncidente[i] = false;
+            motivoClausuraMuelle[i] = string.Empty;
         }
+        alertaTodosMuellesCerradosBuzonActiva = false;
         reinicioConvoyEnCurso = false;
         camionTurnoActual = 1;
+
+        for (int i = 1; i <= 3; i++)
+        {
+            OnEstadoClausuraMuelleCambiado?.Invoke(i, false, string.Empty);
+        }
     }
 
     private static void LimpiarListaPalletsCamion(List<GameObject> lista)
@@ -248,13 +329,13 @@ public class ModuloDespachoTMS : MonoBehaviour
         numeroCamion = 0;
         float pesoPedido = pedido != null ? pedido.peso_kg : 0f;
 
-        // Rotación secuencial 1 -> 2 -> 3 respetando máximo 3 pallets (físicos o reservados), tonelaje máximo, sellado e inspección humana
+        // Rotación secuencial 1 -> 2 -> 3 respetando máximo 3 pallets (físicos o reservados), tonelaje máximo, sellado, clausura e inspección humana
         for (int offset = 0; offset < 3; offset++)
         {
             int candidato = ((camionTurnoActual - 1 + offset) % 3) + 1;
             int ocupados = Mathf.Max(slotsReservados[candidato], ObtenerListaPallets(candidato).Count);
             bool dentroCapacidadPeso = ObtenerPesoCamion(candidato) + pesoPedido <= CapacidadMaximaCamionKg;
-            if (!renovacionEnCurso[candidato] && !camionSellado[candidato] && !inspeccionHumanaEnCurso[candidato] &&
+            if (EstaMuelleAbiertoParaEntrega(candidato) &&
                 ocupados < CapacidadMaximaPalletsCamion && dentroCapacidadPeso)
             {
                 numeroCamion = candidato;
@@ -264,10 +345,43 @@ public class ModuloDespachoTMS : MonoBehaviour
 
         if (numeroCamion == 0)
         {
-            // Fallback seguro si todos estuvieran momentáneamente al límite 3/3 en simultáneo
-            numeroCamion = ((camionTurnoActual - 1) % 3) + 1;
+            if (!TieneAlgunMuelleAbierto())
+            {
+                slotLIFOProyectado = 0;
+                const string msgBloqueo = "<color=#EF4444>[API MÓDULO 5 -> WMS]:</color> Todos los muelles (01..03) están cerrados/sellados o en inspección humana. Asignación bloqueada.";
+                DashboardUI.Instance?.RegistrarLog(msgBloqueo);
+                if (!alertaTodosMuellesCerradosBuzonActiva)
+                {
+                    alertaTodosMuellesCerradosBuzonActiva = true;
+                    DashboardUI.Instance?.RegistrarFeedbackSupervisor(
+                        $"[BLOQUEO TOTAL DE MUELLES (01-03) — {RelojSimuladorTurno.HoraActualFormateada}]: Todos los muelles están cerrados, sellados o en inspección humana. Flota en espera segura sin detener el turno hasta despeje de bahía.");
+                }
+                Debug.LogWarning("[API MÓDULO 5 -> TMS]: Todos los muelles (01..03) están cerrados/sellados o en inspección humana. Asignación bloqueada.");
+                return null;
+            }
+
+            // Solo usar fallback sobre un muelle que siga abierto para entrega (si el bloqueo fue por capacidad/peso)
+            for (int offset = 0; offset < 3; offset++)
+            {
+                int candidato = ((camionTurnoActual - 1 + offset) % 3) + 1;
+                if (EstaMuelleAbiertoParaEntrega(candidato))
+                {
+                    numeroCamion = candidato;
+                    break;
+                }
+            }
+
+            if (numeroCamion == 0)
+            {
+                slotLIFOProyectado = 0;
+                Debug.LogWarning("[API MÓDULO 5 -> TMS]: No hay muelles abiertos disponibles para asignar.");
+                return null;
+            }
+
+            Debug.LogWarning($"[API MÓDULO 5 -> TMS]: Capacidad nominal alcanzada; asignando Muelle_Camion_0{numeroCamion} (abierto).");
         }
 
+        alertaTodosMuellesCerradosBuzonActiva = false;
         int baseOcupados = Mathf.Max(slotsReservados[numeroCamion], ObtenerListaPallets(numeroCamion).Count);
         int nuevaReserva = Mathf.Clamp(baseOcupados + 1, 1, CapacidadMaximaPalletsCamion);
         slotsReservados[numeroCamion] = nuevaReserva;
@@ -290,9 +404,116 @@ public class ModuloDespachoTMS : MonoBehaviour
         return ObtenerTransformMuelle(numeroCamion);
     }
 
+    private int ResolverSiguienteCamionAbierto(int numeroCamionExcluido)
+    {
+        for (int offset = 1; offset <= 2; offset++)
+        {
+            int candidato = ((numeroCamionExcluido - 1 + offset) % 3) + 1;
+            int ocupados = Mathf.Max(slotsReservados[candidato], ObtenerListaPallets(candidato).Count);
+            if (EstaMuelleAbiertoParaEntrega(candidato) && ocupados < CapacidadMaximaPalletsCamion)
+            {
+                return candidato;
+            }
+        }
+
+        for (int offset = 1; offset <= 2; offset++)
+        {
+            int candidato = ((numeroCamionExcluido - 1 + offset) % 3) + 1;
+            if (EstaMuelleAbiertoParaEntrega(candidato))
+            {
+                return candidato;
+            }
+        }
+
+        return 0;
+    }
+
+    public int ClausurarMuellePorIncidenteAMR(int numeroCamionBloqueado, string motivo, out int siguienteCamionOperativo)
+    {
+        numeroCamionBloqueado = Mathf.Clamp(numeroCamionBloqueado, 1, 3);
+        bool flancoClausura = !muelleClausuradoPorIncidente[numeroCamionBloqueado];
+        if (rutinasInspeccionHumana[numeroCamionBloqueado] != null)
+        {
+            StopCoroutine(rutinasInspeccionHumana[numeroCamionBloqueado]);
+            rutinasInspeccionHumana[numeroCamionBloqueado] = null;
+        }
+        inspeccionHumanaEnCurso[numeroCamionBloqueado] = false;
+        muelleClausuradoPorIncidente[numeroCamionBloqueado] = true;
+        motivoClausuraMuelle[numeroCamionBloqueado] = string.IsNullOrEmpty(motivo) ? "AMR averiado/bloqueado en bahía" : motivo;
+
+        siguienteCamionOperativo = ResolverSiguienteCamionAbierto(numeroCamionBloqueado);
+        if (siguienteCamionOperativo > 0)
+        {
+            camionTurnoActual = siguienteCamionOperativo;
+        }
+
+        string msgClausura = $"<color=#EF4444>[TMS CLAUSURA MUELLE 0{numeroCamionBloqueado}]:</color> {motivoClausuraMuelle[numeroCamionBloqueado]}. " +
+            (siguienteCamionOperativo > 0 ? $"Redirigiendo a Muelle_Camion_0{siguienteCamionOperativo}." : "Sin otros muelles abiertos.");
+        DashboardUI.Instance?.RegistrarLog(msgClausura);
+        Debug.LogWarning(msgClausura);
+
+        if (flancoClausura)
+        {
+            string hora = RelojSimuladorTurno.HoraActualFormateada;
+            if (siguienteCamionOperativo > 0)
+            {
+                DashboardUI.Instance?.RegistrarFeedbackSupervisor(
+                    $"[CONTINGENCIA MUELLE 0{numeroCamionBloqueado} — {hora}]: {motivoClausuraMuelle[numeroCamionBloqueado]}. Operación reasignada automáticamente a Muelle_Camion_0{siguienteCamionOperativo} preservando continuidad del turno.");
+            }
+            else
+            {
+                alertaTodosMuellesCerradosBuzonActiva = true;
+                DashboardUI.Instance?.RegistrarFeedbackSupervisor(
+                    $"[BLOQUEO TOTAL DE MUELLES (01-03) — {hora}]: {motivoClausuraMuelle[numeroCamionBloqueado]}. Sin muelles alternativos abiertos; flota en espera segura pre-rampa sin cancelar el turno.");
+            }
+        }
+
+        OnEstadoClausuraMuelleCambiado?.Invoke(numeroCamionBloqueado, true, motivoClausuraMuelle[numeroCamionBloqueado]);
+        return siguienteCamionOperativo;
+    }
+
+    public bool ConfirmarDespejeHumanoMuelle(int numeroCamion = 0)
+    {
+        if (numeroCamion <= 0)
+        {
+            TieneAlgunMuelleClausuradoOEnInspeccion(out numeroCamion);
+        }
+        if (numeroCamion < 1 || numeroCamion > 3) return false;
+        if (!muelleClausuradoPorIncidente[numeroCamion] && !inspeccionHumanaEnCurso[numeroCamion])
+        {
+            return false;
+        }
+
+        if (rutinasInspeccionHumana[numeroCamion] != null)
+        {
+            StopCoroutine(rutinasInspeccionHumana[numeroCamion]);
+            rutinasInspeccionHumana[numeroCamion] = null;
+        }
+
+        muelleClausuradoPorIncidente[numeroCamion] = false;
+        inspeccionHumanaEnCurso[numeroCamion] = false;
+        motivoClausuraMuelle[numeroCamion] = string.Empty;
+        alertaTodosMuellesCerradosBuzonActiva = false;
+        slotsReservados[numeroCamion] = ObtenerCantidadEstibasCamion(numeroCamion);
+
+        if (!EstaMuelleAbiertoParaEntrega(camionTurnoActual))
+        {
+            camionTurnoActual = numeroCamion;
+        }
+
+        string msgDespeje = $"<color=#10B981>[TMS - DESPEJE HUMANO CONFIRMADO]:</color> Operario en piso liberó Muelle_Camion_0{numeroCamion}. Bahía operativa nuevamente.";
+        DashboardUI.Instance?.RegistrarLog(msgDespeje);
+        Debug.Log(msgDespeje);
+
+        OnEstadoClausuraMuelleCambiado?.Invoke(numeroCamion, false, string.Empty);
+        EvaluarReinicioConvoySiCorresponde();
+        return true;
+    }
+
     public int ReportarInspeccionHumanaMuelle(int numeroCamionBloqueado, out int siguienteCamionOperativo)
     {
         numeroCamionBloqueado = Mathf.Clamp(numeroCamionBloqueado, 1, 3);
+        bool flancoInspeccion = !inspeccionHumanaEnCurso[numeroCamionBloqueado] && !muelleClausuradoPorIncidente[numeroCamionBloqueado];
         inspeccionHumanaEnCurso[numeroCamionBloqueado] = true;
 
         if (Application.isPlaying)
@@ -304,50 +525,49 @@ public class ModuloDespachoTMS : MonoBehaviour
             rutinasInspeccionHumana[numeroCamionBloqueado] = StartCoroutine(AutoLiberarInspeccionHumana(numeroCamionBloqueado));
         }
 
-        siguienteCamionOperativo = 0;
-
-        for (int offset = 1; offset <= 2; offset++)
+        siguienteCamionOperativo = ResolverSiguienteCamionAbierto(numeroCamionBloqueado);
+        if (siguienteCamionOperativo > 0)
         {
-            int candidato = ((numeroCamionBloqueado - 1 + offset) % 3) + 1;
-            int ocupados = Mathf.Max(slotsReservados[candidato], ObtenerListaPallets(candidato).Count);
-            if (!renovacionEnCurso[candidato] && !camionSellado[candidato] && !inspeccionHumanaEnCurso[candidato] && ocupados < CapacidadMaximaPalletsCamion)
+            camionTurnoActual = siguienteCamionOperativo;
+        }
+
+        if (flancoInspeccion)
+        {
+            string hora = RelojSimuladorTurno.HoraActualFormateada;
+            if (siguienteCamionOperativo > 0)
             {
-                siguienteCamionOperativo = candidato;
-                break;
+                DashboardUI.Instance?.RegistrarFeedbackSupervisor(
+                    $"[INSPECCIÓN HUMANA MUELLE 0{numeroCamionBloqueado} — {hora}]: Bahía temporalmente en revisión; operación mudada automáticamente a Muelle_Camion_0{siguienteCamionOperativo}.");
+            }
+            else
+            {
+                alertaTodosMuellesCerradosBuzonActiva = true;
+                DashboardUI.Instance?.RegistrarFeedbackSupervisor(
+                    $"[BLOQUEO TOTAL DE MUELLES (01-03) — {hora}]: Muelle_Camion_0{numeroCamionBloqueado} en inspección humana y sin bahías abiertas restantes; flota en espera segura pre-rampa.");
             }
         }
 
-        if (siguienteCamionOperativo == 0)
-        {
-            for (int offset = 1; offset <= 2; offset++)
-            {
-                int candidato = ((numeroCamionBloqueado - 1 + offset) % 3) + 1;
-                if (!inspeccionHumanaEnCurso[candidato])
-                {
-                    siguienteCamionOperativo = candidato;
-                    break;
-                }
-            }
-        }
-
-        if (siguienteCamionOperativo == 0)
-        {
-            siguienteCamionOperativo = (numeroCamionBloqueado % 3) + 1;
-        }
-
-        camionTurnoActual = siguienteCamionOperativo;
+        OnEstadoClausuraMuelleCambiado?.Invoke(numeroCamionBloqueado, true, "Inspección humana en curso");
         return siguienteCamionOperativo;
     }
 
     private IEnumerator AutoLiberarInspeccionHumana(int numeroCamion)
     {
         yield return new WaitForSeconds(Mathf.Max(1f, duracionInspeccionHumana));
+        if (muelleClausuradoPorIncidente[numeroCamion])
+        {
+            rutinasInspeccionHumana[numeroCamion] = null;
+            yield break;
+        }
         inspeccionHumanaEnCurso[numeroCamion] = false;
         rutinasInspeccionHumana[numeroCamion] = null;
+        alertaTodosMuellesCerradosBuzonActiva = false;
 
         string msgDespeje = $"<color=#10B981>[TMS - INSPECCIÓN HUMANA]:</color> Operario en piso despejó Muelle_Camion_0{numeroCamion}. Bahía habilitada nuevamente.";
         DashboardUI.Instance?.RegistrarLog(msgDespeje);
         Debug.Log(msgDespeje);
+        OnEstadoClausuraMuelleCambiado?.Invoke(numeroCamion, false, string.Empty);
+        EvaluarReinicioConvoySiCorresponde();
     }
 
     public void CancelarReservaSlot(int numeroCamion, int slotReservado)
@@ -356,6 +576,12 @@ public class ModuloDespachoTMS : MonoBehaviour
 
         int entregados = ObtenerListaPallets(numeroCamion).Count;
         slotsReservados[numeroCamion] = Mathf.Max(entregados, slotsReservados[numeroCamion] - 1);
+    }
+
+    public Transform ReasignarMuelleAbierto(Pedido pedido, int numeroCamionAnterior, int slotAnterior, out int nuevoCamion, out int nuevoSlot)
+    {
+        CancelarReservaSlot(numeroCamionAnterior, slotAnterior);
+        return ConsultarMuelleDestino(pedido, out nuevoCamion, out nuevoSlot);
     }
 
     public Transform ObtenerTransformMuelle(int numeroCamion)
@@ -483,7 +709,7 @@ public class ModuloDespachoTMS : MonoBehaviour
 
         historialEstibasTurno.Add(new RegistroEstibaTurno
         {
-            Timestamp = System.DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+            Timestamp = RelojSimuladorTurno.HoraActualFormateada,
             NumeroCamion = numeroCamion,
             SlotLIFO = slotRegistrado,
             IdPallet = !string.IsNullOrEmpty(pedido.id_pallet) ? pedido.id_pallet : "PAL-DESC",
@@ -532,34 +758,101 @@ public class ModuloDespachoTMS : MonoBehaviour
         DashboardUI.Instance?.RegistrarLog(msgSellado);
         Debug.Log(msgSellado);
 
-        // 3. Si los 3 camiones ya quedaron llenos y sellados, despachar el convoy completo tras 4.0s
-        if (camionSellado[1] && camionSellado[2] && camionSellado[3] && !reinicioConvoyEnCurso)
+        // 3. Si todos los muelles operativos (no clausurados) ya quedaron llenos y sellados, despachar el convoy sin bloqueo por bahía clausurada
+        if (TodosLosMuellesOperativosEstanSellados(out _) && !reinicioConvoyEnCurso)
         {
-            reinicioConvoyEnCurso = true;
-            yield return new WaitForSeconds(4.0f);
-
-            AbrirTodasLasCompuertas();
-
-            matrizLIFOCamion1.Clear();
-            matrizLIFOCamion2.Clear();
-            matrizLIFOCamion3.Clear();
-            pesoAcumuladoCamion1 = 0f;
-            pesoAcumuladoCamion2 = 0f;
-            pesoAcumuladoCamion3 = 0f;
-
-            for (int i = 1; i <= 3; i++)
-            {
-                slotsReservados[i] = 0;
-                renovacionEnCurso[i] = false;
-                camionSellado[i] = false;
-            }
-            camionTurnoActual = 1;
-            reinicioConvoyEnCurso = false;
-
-            string msgConvoy = "<color=#38BDF8>[TMS MÓDULO 5]:</color> Convoy de 3 camiones despachado a ruta. 3 nuevos remolques vacíos posicionados en Muelles 01, 02 y 03.";
-            DashboardUI.Instance?.RegistrarLog(msgConvoy);
-            Debug.Log(msgConvoy);
+            yield return StartCoroutine(EjecutarReinicioConvoyOperativo());
         }
+    }
+
+    private bool TodosLosMuellesOperativosEstanSellados(out int cantidadSellados)
+    {
+        cantidadSellados = 0;
+        for (int i = 1; i <= 3; i++)
+        {
+            if (muelleClausuradoPorIncidente[i] || inspeccionHumanaEnCurso[i])
+            {
+                continue;
+            }
+            if (!camionSellado[i])
+            {
+                return false;
+            }
+            cantidadSellados++;
+        }
+        return cantidadSellados >= 1;
+    }
+
+    private void EvaluarReinicioConvoySiCorresponde()
+    {
+        if (!reinicioConvoyEnCurso && Application.isPlaying && TodosLosMuellesOperativosEstanSellados(out _))
+        {
+            StartCoroutine(EjecutarReinicioConvoyOperativo());
+        }
+    }
+
+    private void ReiniciarCamionParaNuevoConvoy(int numeroCamion)
+    {
+        ConfigurarPuertaCamion(numeroCamion, false);
+        switch (numeroCamion)
+        {
+            case 1:
+                matrizLIFOCamion1.Clear();
+                pesoAcumuladoCamion1 = 0f;
+                LimpiarListaPalletsCamion(palletsCamion1);
+                break;
+            case 2:
+                matrizLIFOCamion2.Clear();
+                pesoAcumuladoCamion2 = 0f;
+                LimpiarListaPalletsCamion(palletsCamion2);
+                break;
+            case 3:
+                matrizLIFOCamion3.Clear();
+                pesoAcumuladoCamion3 = 0f;
+                LimpiarListaPalletsCamion(palletsCamion3);
+                break;
+        }
+        slotsReservados[numeroCamion] = 0;
+        renovacionEnCurso[numeroCamion] = false;
+        camionSellado[numeroCamion] = false;
+    }
+
+    private IEnumerator EjecutarReinicioConvoyOperativo()
+    {
+        reinicioConvoyEnCurso = true;
+        yield return new WaitForSeconds(4.0f);
+
+        int cantidadRenovados = 0;
+        for (int i = 1; i <= 3; i++)
+        {
+            if (!muelleClausuradoPorIncidente[i] && !inspeccionHumanaEnCurso[i] && camionSellado[i])
+            {
+                ReiniciarCamionParaNuevoConvoy(i);
+                cantidadRenovados++;
+            }
+        }
+
+        int primerAbierto = 0;
+        for (int i = 1; i <= 3; i++)
+        {
+            if (EstaMuelleAbiertoParaEntrega(i))
+            {
+                primerAbierto = i;
+                break;
+            }
+        }
+        if (primerAbierto > 0)
+        {
+            alertaTodosMuellesCerradosBuzonActiva = false;
+        }
+        camionTurnoActual = primerAbierto > 0 ? primerAbierto : 1;
+        reinicioConvoyEnCurso = false;
+
+        string msgConvoy = cantidadRenovados >= 3
+            ? "<color=#38BDF8>[TMS MÓDULO 5]:</color> Convoy de 3 camiones despachado a ruta. 3 nuevos remolques vacíos posicionados en Muelles 01, 02 y 03."
+            : $"<color=#38BDF8>[TMS MÓDULO 5]:</color> Convoy parcial ({cantidadRenovados} bahías operativas) despachado a ruta. Muelles habilitados listos para carga.";
+        DashboardUI.Instance?.RegistrarLog(msgConvoy);
+        Debug.Log(msgConvoy);
     }
 
     private bool AlgunAMREnMuelle(int numeroCamion)
@@ -573,7 +866,6 @@ public class ModuloDespachoTMS : MonoBehaviour
         {
             RobotAMR amr = flota[i];
             if (amr == null || !amr.gameObject.activeInHierarchy) continue;
-            if (amr.estadoActual == RobotAMR.EstadoRobot.Apagado) continue;
 
             if (amr.transform.position.z > -2.0f && Mathf.Abs(amr.transform.position.x - xMuelle) < 4.5f)
             {

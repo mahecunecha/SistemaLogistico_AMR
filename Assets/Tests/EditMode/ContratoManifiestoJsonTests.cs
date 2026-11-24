@@ -122,5 +122,58 @@ namespace ProyectoBodega.Tests.EditMode
                 Assert.IsNotEmpty(err);
             }
         }
+
+        [Test]
+        public void TryParsearYValidarManifiesto_BomUtf8YArregloRaiz_DeserializaCorrectamente()
+        {
+            string conBom = "\uFEFF" + File.ReadAllText(Path.Combine(Application.streamingAssetsPath, "lote_30_pallets.json"));
+            bool okBom = RobotManagerEVE.TryParsearYValidarManifiesto(conBom, null, out Manifiesto loteBom, out string errBom);
+
+            Assert.IsTrue(okBom, errBom);
+            Assert.IsNotNull(loteBom);
+            Assert.AreEqual("LOTE-ERP-030", loteBom.id_lote);
+            Assert.AreEqual(30, loteBom.total_pallets);
+
+            const string arregloRaiz = "\uFEFF[{\"id_pallet\":\"PAL-ARR-01\",\"nombre_producto\":\"Aguila\",\"codigo_sku\":\"AGU-RUB-330\",\"peso_kg\":850,\"coordenada_bodega\":\"P1-C1-F1\"}]";
+            bool okArray = RobotManagerEVE.TryParsearYValidarManifiesto(arregloRaiz, null, out Manifiesto loteArray, out string errArray);
+
+            Assert.IsTrue(okArray, errArray);
+            Assert.IsNotNull(loteArray);
+            Assert.AreEqual(1, loteArray.pedidos.Count);
+            Assert.AreEqual(1, loteArray.total_pallets);
+            Assert.AreEqual("PAL-ARR-01", loteArray.pedidos[0].id_pallet);
+        }
+
+        [Test]
+        public void SelectorArchivosWindows_NormalizarYResolverBandejaERP_PriorizaBandejaYSeparadoresWindows()
+        {
+            Assert.AreEqual("C:\\Builds\\Sistema\\Bandeja_ERP", SelectorArchivosWindows.NormalizarRutaWindows("C:/Builds/Sistema/Bandeja_ERP/"));
+            Assert.AreEqual("C:\\", SelectorArchivosWindows.NormalizarRutaWindows("C:/"));
+
+            string tempRoot = Path.Combine(Path.GetTempPath(), "TestBodegaERP_" + System.Guid.NewGuid().ToString("N"));
+            string dataDir = Path.Combine(tempRoot, "SistemaLogistico_AMR_Data");
+            string streamingDir = Path.Combine(dataDir, "StreamingAssets");
+            string bandejaStreaming = Path.Combine(streamingDir, "Bandeja_ERP");
+            string bandejaExe = Path.Combine(tempRoot, "Bandeja_ERP");
+
+            try
+            {
+                Directory.CreateDirectory(streamingDir);
+                Assert.AreEqual(streamingDir, SelectorArchivosWindows.ResolverDirectorioInicialBandejaERP(streamingDir, dataDir));
+
+                Directory.CreateDirectory(bandejaStreaming);
+                Assert.AreEqual(bandejaStreaming, SelectorArchivosWindows.ResolverDirectorioInicialBandejaERP(streamingDir, dataDir));
+
+                Directory.CreateDirectory(bandejaExe);
+                Assert.AreEqual(bandejaExe, SelectorArchivosWindows.ResolverDirectorioInicialBandejaERP(streamingDir, dataDir));
+            }
+            finally
+            {
+                if (Directory.Exists(tempRoot))
+                {
+                    Directory.Delete(tempRoot, true);
+                }
+            }
+        }
     }
 }

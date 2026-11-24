@@ -137,5 +137,60 @@ namespace ProyectoBodega.Tests.EditMode
             Assert.IsFalse(amr.ActivarParadaSeguridadLiDAR());
             Assert.AreEqual(RobotAMR.EstadoRobot.Recargando, amr.estadoActual);
         }
+
+        [Test]
+        public void PrioridadBateriaBajo20YRestriccion_CedePasoASanoEIncluyeAlcanceTrasero()
+        {
+            amr.idRobot = "AMR-01";
+            amr.bateriaActual = 18.0f; // < 20% -> potencia/velocidad restringida
+            amr.estadoActual = RobotAMR.EstadoRobot.Transportando;
+            amr.transform.position = new Vector3(10f, 0f, -20f);
+
+            GameObject goAmr2 = CrearObjetoTemporal("Test_RobotAMR_02");
+            RobotAMR amr2 = goAmr2.AddComponent<RobotAMR>();
+            amr2.idRobot = "AMR-02";
+            amr2.bateriaActual = 76.0f; // Sano sin restricción
+            amr2.estadoActual = RobotAMR.EstadoRobot.En_Transito;
+            amr2.transform.position = new Vector3(10f, 0f, -22.2f);
+
+            Assert.IsTrue(amr.TieneRestriccionPotenciaOVelocidad);
+            Assert.IsFalse(amr2.TieneRestriccionPotenciaOVelocidad);
+            Assert.Greater(amr2.ObtenerPrioridadVDA(amr2), amr.ObtenerPrioridadVDA(amr));
+            Assert.IsTrue(amr.DebeCederPasoA(amr2));
+            Assert.IsFalse(amr2.DebeCederPasoA(amr));
+
+            // Alcance trasero dentro del radio de entrada (2.20m < 2.50m) cuando AMR-02 avanza en el mismo sentido (+Z)
+            bool convergePorDetras = RobotAMR.ConvergeOAlcanzaPorDetras(
+                new Vector2(10f, -20f),
+                new Vector2(0f, 1f),
+                true,
+                18.0f,
+                new Vector2(10f, -22.2f),
+                new Vector2(0f, 1f),
+                false,
+                76.0f,
+                2.50f);
+            Assert.IsTrue(convergePorDetras);
+
+            // Si AMR-02 se aleja en sentido opuesto (-Z), no fuerza ceda el paso trasero
+            bool alejandosePorDetras = RobotAMR.ConvergeOAlcanzaPorDetras(
+                new Vector2(10f, -20f),
+                new Vector2(0f, 1f),
+                true,
+                18.0f,
+                new Vector2(10f, -22.2f),
+                new Vector2(0f, -1f),
+                false,
+                76.0f,
+                2.50f);
+            Assert.IsFalse(alejandosePorDetras);
+
+            // Guarda de evacuación de muelle conservada (Z > -12 y X > 18)
+            amr.estadoActual = RobotAMR.EstadoRobot.En_Transito;
+            amr.transform.position = new Vector3(22f, 0f, -6f);
+            amr2.transform.position = new Vector3(15f, 0f, -20f);
+            Assert.IsFalse(amr.DebeCederPasoA(amr2));
+            Assert.IsTrue(amr2.DebeCederPasoA(amr));
+        }
     }
 }

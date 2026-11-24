@@ -1,9 +1,12 @@
 using UnityEngine;
 using UnityEngine.AI;
 using TMPro;
+using System.Globalization;
 
 public class TelemetriaAMR : MonoBehaviour
 {
+    public const string TextoETACalculando = "ETA: Calculando";
+
     private RobotAMR robot;
     private NavMeshAgent agente;
     private Canvas canvasFlotante;
@@ -20,10 +23,28 @@ public class TelemetriaAMR : MonoBehaviour
     [Header("Throttling Settings")]
     private float tiempoProximoRefrescoETA = 0f;
     private const float IntervaloRefrescoETA = 0.15f; // ~6.6 Hz de refresco
-    private float ultimoETAValor = -1f;
-    private bool ultimoEstadoETAPendiente = false;
-    private string textoETACache = "ETA: --";
+    private string textoETACache = TextoETACalculando;
     private int ultimoPorcentajeRecargaMostrado = -1;
+
+    public static string FormatearETASeguro(float distanciaRestanteM, float velocidadActualMps, bool pathPending)
+    {
+        if (pathPending ||
+            float.IsNaN(distanciaRestanteM) || float.IsInfinity(distanciaRestanteM) ||
+            float.IsNaN(velocidadActualMps) || float.IsInfinity(velocidadActualMps) ||
+            distanciaRestanteM <= 0.5f || velocidadActualMps <= 0.1f)
+        {
+            return TextoETACalculando;
+        }
+
+        float eta = distanciaRestanteM / velocidadActualMps;
+        if (float.IsNaN(eta) || float.IsInfinity(eta) || eta < 0f || eta > 3600f)
+        {
+            return TextoETACalculando;
+        }
+
+        float etaRedondeado = Mathf.Round(eta * 10f) / 10f;
+        return string.Format(CultureInfo.InvariantCulture, "ETA: {0:F1}s", etaRedondeado);
+    }
 
     void Awake()
     {
@@ -97,11 +118,9 @@ public class TelemetriaAMR : MonoBehaviour
 
         if (agente == null || !agente.enabled || !agente.isOnNavMesh)
         {
-            if (textoETACache != "ETA: --" || ultimoETAValor != 0f || ultimoEstadoETAPendiente)
+            if (textoETACache != TextoETACalculando)
             {
-                textoETACache = "ETA: --";
-                ultimoETAValor = 0f;
-                ultimoEstadoETAPendiente = false;
+                textoETACache = TextoETACalculando;
                 RefrescarTextoPildora();
             }
             return;
@@ -130,50 +149,24 @@ public class TelemetriaAMR : MonoBehaviour
     {
         if (agente == null || !agente.enabled || !agente.isOnNavMesh)
         {
-            if (textoETACache != "ETA: --")
+            if (textoETACache != TextoETACalculando)
             {
-                textoETACache = "ETA: --";
+                textoETACache = TextoETACalculando;
                 RefrescarTextoPildora();
             }
-            ultimoETAValor = 0f;
-            ultimoEstadoETAPendiente = false;
             return;
         }
 
         bool requiereRefresco = false;
 
-        if (agente.pathPending)
-        {
-            if (!ultimoEstadoETAPendiente || textoETACache != "ETA: --")
-            {
-                textoETACache = "ETA: --";
-                ultimoEstadoETAPendiente = true;
-                ultimoETAValor = -1f;
-                requiereRefresco = true;
-            }
-        }
-        else if (agente.remainingDistance > 0.5f && agente.velocity.magnitude > 0.1f)
-        {
-            float eta = agente.remainingDistance / agente.velocity.magnitude;
-            float etaRedondeado = Mathf.Round(eta * 10f) / 10f; // Redondeo a 1 decimal
+        float distanciaTotal = robot != null ? robot.CalcularDistanciaRestanteRutaActual() : agente.remainingDistance;
+        float velocidadActual = agente.velocity.magnitude;
+        string nuevoTextoETA = FormatearETASeguro(distanciaTotal, velocidadActual, agente.pathPending);
 
-            if (Mathf.Abs(etaRedondeado - ultimoETAValor) >= 0.1f || ultimoEstadoETAPendiente)
-            {
-                ultimoETAValor = etaRedondeado;
-                ultimoEstadoETAPendiente = false;
-                textoETACache = $"ETA: {etaRedondeado:F1}s";
-                requiereRefresco = true;
-            }
-        }
-        else
+        if (nuevoTextoETA != textoETACache)
         {
-            if (ultimoETAValor != 0f || ultimoEstadoETAPendiente || textoETACache != "ETA: --")
-            {
-                textoETACache = "ETA: --";
-                ultimoETAValor = 0f;
-                ultimoEstadoETAPendiente = false;
-                requiereRefresco = true;
-            }
+            textoETACache = nuevoTextoETA;
+            requiereRefresco = true;
         }
 
         if (robot != null && robot.estadoActual == RobotAMR.EstadoRobot.Recargando)
@@ -223,7 +216,7 @@ public class TelemetriaAMR : MonoBehaviour
             bool enMovimientoHaciaPad = agente != null && agente.enabled && agente.isOnNavMesh && agente.velocity.magnitude > 0.15f;
             txtEstado.text = enMovimientoHaciaPad
                 ? $"{id} • <color=#38BDF8>RETORNO PAD</color> | {textoETACache}"
-                : $"{id} • <color=#38BDF8>CARGA 1C ({robot.bateriaActual:F0}%)</color>";
+                : $"{id} • <color=#38BDF8>CARGA 2h ({robot.bateriaActual:F0}%)</color>";
             return;
         }
 
@@ -239,6 +232,12 @@ public class TelemetriaAMR : MonoBehaviour
             return;
         }
 
+        if (estado == RobotAMR.EstadoRobot.FueraDeServicio_Danado)
+        {
+            txtEstado.text = $"{id} • <color=#DC2626>FALLA HW — SIN RESPUESTA</color>";
+            return;
+        }
+
         txtEstado.text = $"{id} • <color=#38BDF8>{ObtenerEstadoCorto(estado)}</color> | {textoETACache}";
     }
 
@@ -250,6 +249,7 @@ public class TelemetriaAMR : MonoBehaviour
             case RobotAMR.EstadoRobot.Extrayendo: return "EXTRAYENDO";
             case RobotAMR.EstadoRobot.Transportando: return "CARGADO";
             case RobotAMR.EstadoRobot.Entregando: return "DESCARGA";
+            case RobotAMR.EstadoRobot.FueraDeServicio_Danado: return "DAÑADO HW";
             default: return estado.ToString().ToUpperInvariant();
         }
     }

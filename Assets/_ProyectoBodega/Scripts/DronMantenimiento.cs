@@ -33,9 +33,27 @@ public class DronMantenimiento : MonoBehaviour
     [Header("Componentes Visuales")]
     public DronePropellers controlHelices;
 
+    public enum EstadoOperativoDron
+    {
+        EnBase,
+        DespejandoPasillo,
+        RescatandoAMR,
+        TrasladandoAZonaTecnica
+    }
+
     [Header("Estado Operativo")]
     public bool ocupado = false;
+    public EstadoOperativoDron estadoOperativoActual { get; private set; } = EstadoOperativoDron.EnBase;
+    public string descripcionEstadoActual { get; private set; } = "EN BASE (STANDBY)";
+    public event Action<EstadoOperativoDron, string> OnEstadoDronCambiado;
     private bool estadoLedSuccionActivo = false;
+
+    private void ActualizarEstadoOperativo(EstadoOperativoDron nuevoEstado, string descripcion)
+    {
+        estadoOperativoActual = nuevoEstado;
+        descripcionEstadoActual = !string.IsNullOrEmpty(descripcion) ? descripcion : "EN BASE (STANDBY)";
+        OnEstadoDronCambiado?.Invoke(estadoOperativoActual, descripcionEstadoActual);
+    }
 
     void Awake()
     {
@@ -59,6 +77,7 @@ public class DronMantenimiento : MonoBehaviour
         estadoLedSuccionActivo = false;
         AplicarExtensionChupa(0.20f);
         ConfigurarEstadoLedSuccion(false);
+        ActualizarEstadoOperativo(EstadoOperativoDron.EnBase, "EN BASE (STANDBY)");
     }
 
     private void ResolverReferenciasChupa()
@@ -324,6 +343,7 @@ public class DronMantenimiento : MonoBehaviour
         if (obstaculo == null) yield break;
 
         ocupado = true;
+        ActualizarEstadoOperativo(EstadoOperativoDron.DespejandoPasillo, "DESPEJANDO PASILLO (ISO)");
         tieneCargaAcoplada = false;
         ConfigurarEstadoLedSuccion(false);
         AplicarExtensionChupa(0.20f);
@@ -354,20 +374,13 @@ public class DronMantenimiento : MonoBehaviour
         // -------------------------------------------------------------
         yield return StartCoroutine(MoverTramoDron(transform.position, posCenit, 2.0f, true));
 
-        // Verificación espacial activa antes de descender (con Fail-Safe anti-congelamiento)
+        // Verificación espacial activa antes de descender (sin desaparición mágica)
         if (!ValidarMovimientoAereoSeguro(posCenit, posAcople, false, obstaculo, out _))
         {
-            Debug.LogWarning($"<color=orange>[DRON MANTENIMIENTO]:</color> Descenso bloqueado por envolvente aérea o zona protegida en {posObs}. Aplicando fail-safe de liberación.");
-            DashboardUI.Instance?.RegistrarLog("<color=#F59E0B>[DRON FAIL-SAFE]:</color> Zona aérea restringida detectada sobre obstáculo. Despeje preventivo aplicado para liberar AMR.");
-
-            if (obstaculo != null)
-            {
-                obstaculo.transform.SetParent(null, true);
-                if (colObstaculo != null) colObstaculo.enabled = true;
-                obstaculo.SetActive(false);
-            }
-
-            onDespejado?.Invoke();
+            string msgZona = $"[DRON ZONA RESTRINGIDA]: Envolvente aérea bloqueada sobre obstáculo en {posObs}. Despeje automático cancelado; se requiere intervención humana en piso.";
+            Debug.LogWarning($"<color=orange>{msgZona}</color>");
+            DashboardUI.Instance?.RegistrarLog($"<color=#EF4444><b>{msgZona}</b></color>");
+            GestorAudioSCADA.Instance?.ActivarAlarmaSonoraFabrica("Obstáculo en zona aérea restringida para dron");
 
             yield return StartCoroutine(MoverTramoDron(transform.position, posicionBaseTecho, 1.5f, true));
             transform.position = posicionBaseTecho;
@@ -376,6 +389,7 @@ public class DronMantenimiento : MonoBehaviour
             ConfigurarEstadoLedSuccion(false);
             AplicarExtensionChupa(0.20f);
             ocupado = false;
+            ActualizarEstadoOperativo(EstadoOperativoDron.EnBase, "EN BASE (STANDBY)");
             yield break;
         }
 
@@ -517,12 +531,13 @@ public class DronMantenimiento : MonoBehaviour
         ConfigurarEstadoLedSuccion(false);
         AplicarExtensionChupa(0.20f);
         ocupado = false;
+        ActualizarEstadoOperativo(EstadoOperativoDron.EnBase, "EN BASE (STANDBY)");
     }
 
     /// <summary>
-    /// Corrutina de rescate aéreo de 5 etapas para un AMR colapsado (&lt; 3% BMS) usando la chupa industrial articulada.
+    /// Corrutina de rescate/traslado aéreo de 5 etapas para un AMR colapsado (&lt;= 3% BMS -> Pad) o dañado (HW -> Zona Técnica) usando la chupa industrial articulada.
     /// </summary>
-    public IEnumerator EjecutarRescateAMRAbortado(RobotAMR amrApagado, Vector3 posPadDestino, Action onRescateCompletado = null, Action onElevacionCompletada = null)
+    public IEnumerator EjecutarRescateAMRAbortado(RobotAMR amrApagado, Vector3 posPadDestino, Action onRescateCompletado = null, Action onElevacionCompletada = null, bool esTrasladoZonaTecnica = false)
     {
         if (amrApagado == null) yield break;
 
@@ -532,6 +547,14 @@ public class DronMantenimiento : MonoBehaviour
         }
 
         ocupado = true;
+        if (esTrasladoZonaTecnica || amrApagado.estadoActual == RobotAMR.EstadoRobot.FueraDeServicio_Danado)
+        {
+            ActualizarEstadoOperativo(EstadoOperativoDron.TrasladandoAZonaTecnica, $"TRASLADANDO {amrApagado.idRobot} A ZONA TÉCNICA");
+        }
+        else
+        {
+            ActualizarEstadoOperativo(EstadoOperativoDron.RescatandoAMR, $"RESCATANDO {amrApagado.idRobot} AL PAD");
+        }
         tieneCargaAcoplada = false;
         ConfigurarEstadoLedSuccion(false);
         AplicarExtensionChupa(0.20f);
@@ -550,8 +573,41 @@ public class DronMantenimiento : MonoBehaviour
         Vector3 posAcopleAMR = new Vector3(posAMR.x, topeVisualAMR + 1.15f, posAMR.z);
         Vector3 posElevadoAMR = new Vector3(posAMR.x, Mathf.Max(8.5f, yCrucero - 1.0f), posAMR.z);
 
+        ValidarMovimientoAereoSeguro(transform.position, posCenitAMR, false, amrApagado.gameObject, out float altitudCruceroSegura);
+        yCrucero = Mathf.Max(yCrucero, altitudCruceroSegura);
+        posCenitAMR.y = yCrucero;
+
+        if (!ValidarMovimientoAereoSeguro(posCenitAMR, posAcopleAMR, false, amrApagado.gameObject, out _))
+        {
+            Debug.LogWarning($"<color=orange>[DRON MANTENIMIENTO]:</color> Zona aérea restringida sobre {amrApagado.idRobot} en {posAMR}. Intervención humana requerida en piso.");
+            DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B>[DRON SOPORTE]:</color> Descenso bloqueado sobre {amrApagado.idRobot} (z={posAMR.z:F2}m). Se requiere asistencia humana en piso.");
+            tieneCargaAcoplada = false;
+            ConfigurarEstadoLedSuccion(false);
+            AplicarExtensionChupa(0.20f);
+            ocupado = false;
+            ActualizarEstadoOperativo(EstadoOperativoDron.EnBase, "EN BASE (STANDBY)");
+            onElevacionCompletada?.Invoke();
+            yield break;
+        }
+
         // Etapa 1A (2.0s): Vuelo a crucero hasta el cenit del AMR apagado
         yield return StartCoroutine(MoverTramoDron(transform.position, posCenitAMR, 2.0f, true));
+
+        if (!ValidarMovimientoAereoSeguro(posCenitAMR, posAcopleAMR, false, amrApagado.gameObject, out _))
+        {
+            Debug.LogWarning($"<color=orange>[DRON MANTENIMIENTO]:</color> Envolvente aérea bloqueada antes de descender sobre {amrApagado.idRobot}. Retornando a base.");
+            DashboardUI.Instance?.RegistrarLog($"<color=#F59E0B>[DRON SOPORTE]:</color> Descenso cancelado por seguridad aérea sobre {amrApagado.idRobot}. Retornando a base.");
+            onElevacionCompletada?.Invoke();
+            yield return StartCoroutine(MoverTramoDron(transform.position, posicionBaseTecho, 1.5f, true));
+            transform.position = posicionBaseTecho;
+            transform.rotation = rotacionBase;
+            tieneCargaAcoplada = false;
+            ConfigurarEstadoLedSuccion(false);
+            AplicarExtensionChupa(0.20f);
+            ocupado = false;
+            ActualizarEstadoOperativo(EstadoOperativoDron.EnBase, "EN BASE (STANDBY)");
+            yield break;
+        }
 
         // Etapa 1B (2.0s): Descenso vertical puro y extensión telescópica hasta contacto 0.00 m sobre chasis
         const float durDescenso1B = 2.0f;
@@ -635,7 +691,14 @@ public class DronMantenimiento : MonoBehaviour
         SincronizarChupaYCarga(topeVisualEnPad, amrApagado.gameObject, alturaVisualAMR);
 
         amrApagado.transform.SetParent(null, true);
-        amrApagado.FinalizarRescateEnPad(posPadDestino);
+        if (esTrasladoZonaTecnica || amrApagado.estadoActual == RobotAMR.EstadoRobot.FueraDeServicio_Danado)
+        {
+            amrApagado.FinalizarTrasladoAZonaTecnica(posPadDestino);
+        }
+        else
+        {
+            amrApagado.FinalizarRescateEnPad(posPadDestino);
+        }
         tieneCargaAcoplada = false;
         ConfigurarEstadoLedSuccion(false);
         AplicarExtensionChupa(0.20f);
@@ -649,6 +712,7 @@ public class DronMantenimiento : MonoBehaviour
         transform.position = posicionBaseTecho;
         transform.rotation = rotacionBase;
         ocupado = false;
+        ActualizarEstadoOperativo(EstadoOperativoDron.EnBase, "EN BASE (STANDBY)");
     }
 
     private IEnumerator MoverTramoDron(Vector3 origen, Vector3 destino, float duracion, bool rotarHaciaDestino)

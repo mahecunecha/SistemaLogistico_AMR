@@ -106,9 +106,41 @@ public class GeneradorTablaManifiesto : MonoBehaviour
             InstanciarFilaOperativa(plantilla);
         }
 
+        ActualizarPesoFilaOperativa(indiceSecuencial, plantilla);
         ActualizarResumenColaEnVivo(palletsRestantesEnCola);
         ForzarLayoutYScroll(indiceObjetivo: indiceSecuencial);
         return indiceSecuencial;
+    }
+
+    private void ActualizarPesoFilaOperativa(int indiceSecuencial, Pedido plantilla)
+    {
+        if (contenedorFilas == null || plantilla == null || plantilla.peso_kg <= 0f || indiceSecuencial < 0)
+        {
+            return;
+        }
+
+        int indiceFilaDato = 0;
+        for (int i = 0; i < contenedorFilas.childCount; i++)
+        {
+            Transform child = contenedorFilas.GetChild(i);
+            if (child == null) continue;
+            if (child.name == "Header_Manifiesto" || child.name == "Fila_Titulos" || child.name == "Fila_Resumen_Lote" || child.gameObject == filaResumenGO)
+            {
+                continue;
+            }
+
+            if (indiceFilaDato == indiceSecuencial)
+            {
+                TextMeshProUGUI[] cols = child.GetComponentsInChildren<TextMeshProUGUI>(true);
+                if (cols != null && cols.Length >= 5 && cols[3] != null)
+                {
+                    cols[3].text = plantilla.peso_kg.ToString("F0") + " kg";
+                }
+                return;
+            }
+
+            indiceFilaDato++;
+        }
     }
 
     private void InstanciarFilaOperativa(Pedido plantilla)
@@ -126,7 +158,7 @@ public class GeneradorTablaManifiesto : MonoBehaviour
             columnas[0].text = $"PAL-{numeroPallet}";
             columnas[1].text = plantilla != null && !string.IsNullOrEmpty(plantilla.nombre_producto) ? plantilla.nombre_producto : "Carga Industrial";
             columnas[2].text = plantilla != null && !string.IsNullOrEmpty(plantilla.codigo_sku) ? plantilla.codigo_sku : "SKU-STD";
-            float peso = plantilla != null && plantilla.peso_kg > 0f ? plantilla.peso_kg : 420f;
+            float peso = plantilla != null && plantilla.peso_kg > 0f ? plantilla.peso_kg : Pedido.PesoReferenciaBaseKg;
             columnas[3].text = peso.ToString("F0") + " kg";
 
             for (int c = 0; c < 4; c++)
@@ -220,7 +252,7 @@ public class GeneradorTablaManifiesto : MonoBehaviour
                 columnasResumenLote[0].text = $"+{sinInstanciar} EN COLA WMS";
                 columnasResumenLote[1].text = "Lote ERP";
                 columnasResumenLote[2].text = "CONSOLIDADO";
-                columnasResumenLote[3].text = $"{sinInstanciar * 420f:F0} kg";
+                columnasResumenLote[3].text = $"{sinInstanciar * Pedido.PesoReferenciaBaseKg:F0} kg";
                 for (int c = 0; c < 4; c++)
                 {
                     if (columnasResumenLote[c] == null) continue;
