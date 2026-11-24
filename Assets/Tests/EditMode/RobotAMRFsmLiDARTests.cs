@@ -139,56 +139,116 @@ namespace ProyectoBodega.Tests.EditMode
         }
 
         [Test]
-        public void PrioridadBateriaBajo20YRestriccion_CedePasoASanoEIncluyeAlcanceTrasero()
+        public void PrioridadSinSesgoBateriaBajo20_CargadoTienePrioridadSobreDescargado()
         {
             amr.idRobot = "AMR-01";
-            amr.bateriaActual = 18.0f; // < 20% -> potencia/velocidad restringida
-            amr.estadoActual = RobotAMR.EstadoRobot.Transportando;
-            amr.transform.position = new Vector3(10f, 0f, -20f);
+            amr.bateriaActual = 80.0f;
+            amr.estadoActual = RobotAMR.EstadoRobot.En_Transito;
+            amr.transform.position = new Vector3(10f, 0f, -22f);
 
             GameObject goAmr2 = CrearObjetoTemporal("Test_RobotAMR_02");
             RobotAMR amr2 = goAmr2.AddComponent<RobotAMR>();
             amr2.idRobot = "AMR-02";
-            amr2.bateriaActual = 76.0f; // Sano sin restricción
-            amr2.estadoActual = RobotAMR.EstadoRobot.En_Transito;
-            amr2.transform.position = new Vector3(10f, 0f, -22.2f);
+            amr2.bateriaActual = 18.0f; // < 20% conserva reducción de potencia/velocidad, pero NO cede prioridad por batería
+            amr2.estadoActual = RobotAMR.EstadoRobot.Transportando;
+            amr2.transform.position = new Vector3(10f, 0f, -20f);
 
-            Assert.IsTrue(amr.TieneRestriccionPotenciaOVelocidad);
-            Assert.IsFalse(amr2.TieneRestriccionPotenciaOVelocidad);
-            Assert.Greater(amr2.ObtenerPrioridadVDA(amr2), amr.ObtenerPrioridadVDA(amr));
-            Assert.IsTrue(amr.DebeCederPasoA(amr2));
+            Assert.IsTrue(amr2.EnPotenciaReducidaBateria);
+            Assert.IsFalse(amr.EnPotenciaReducidaBateria);
+            Assert.AreEqual(8, amr2.ObtenerPrioridadVDA(amr2));
+            Assert.AreEqual(5, amr.ObtenerPrioridadVDA(amr));
             Assert.IsFalse(amr2.DebeCederPasoA(amr));
+            Assert.IsTrue(amr.DebeCederPasoA(amr2));
 
-            // Alcance trasero dentro del radio de entrada (2.20m < 2.50m) cuando AMR-02 avanza en el mismo sentido (+Z)
-            bool convergePorDetras = RobotAMR.ConvergeOAlcanzaPorDetras(
-                new Vector2(10f, -20f),
-                new Vector2(0f, 1f),
-                true,
-                18.0f,
-                new Vector2(10f, -22.2f),
-                new Vector2(0f, 1f),
-                false,
-                76.0f,
-                2.50f);
-            Assert.IsTrue(convergePorDetras);
+            // Cargado (Transportando) también tiene prioridad sobre Recargando sin importar batería ni índice
+            amr.estadoActual = RobotAMR.EstadoRobot.Recargando;
+            Assert.AreEqual(5, amr.ObtenerPrioridadVDA(amr));
+            Assert.IsFalse(amr2.DebeCederPasoA(amr));
+            Assert.IsTrue(amr.DebeCederPasoA(amr2));
 
-            // Si AMR-02 se aleja en sentido opuesto (-Z), no fuerza ceda el paso trasero
-            bool alejandosePorDetras = RobotAMR.ConvergeOAlcanzaPorDetras(
-                new Vector2(10f, -20f),
-                new Vector2(0f, 1f),
-                true,
-                18.0f,
-                new Vector2(10f, -22.2f),
-                new Vector2(0f, -1f),
-                false,
-                76.0f,
-                2.50f);
-            Assert.IsFalse(alejandosePorDetras);
-
-            // Guarda de evacuación de muelle conservada (Z > -12 y X > 18)
+            // Guarda de evacuación de muelle conservada (Z > -12 y X > 18) incluso descargado frente a cargado
             amr.estadoActual = RobotAMR.EstadoRobot.En_Transito;
             amr.transform.position = new Vector3(22f, 0f, -6f);
-            amr2.transform.position = new Vector3(15f, 0f, -20f);
+            amr2.transform.position = new Vector3(22f, 0f, -14f);
+            Assert.IsFalse(amr.DebeCederPasoA(amr2));
+            Assert.IsTrue(amr2.DebeCederPasoA(amr));
+
+            // Guarda de maniobra fija (Entregando) conservada sobre Transportando
+            amr.estadoActual = RobotAMR.EstadoRobot.Entregando;
+            amr.transform.position = new Vector3(22f, 0f, 4f);
+            amr2.transform.position = new Vector3(22f, 0f, -14f);
+            Assert.IsFalse(amr.DebeCederPasoA(amr2));
+            Assert.IsTrue(amr2.DebeCederPasoA(amr));
+        }
+
+        [Test]
+        public void PrioridadMismaCarga_AdelanteTienePrioridadSobreAtrasSinBloqueoEstatico()
+        {
+            // Caso 1: Ambos cargados (Transportando), el de adelante tiene < 20% e índice mayor -> mantiene prioridad
+            amr.idRobot = "AMR-01";
+            amr.bateriaActual = 80.0f;
+            amr.estadoActual = RobotAMR.EstadoRobot.Transportando;
+            amr.transform.position = new Vector3(10f, 0f, -22.0f);
+            amr.transform.rotation = Quaternion.identity;
+
+            GameObject goAmr2 = CrearObjetoTemporal("Test_RobotAMR_02");
+            RobotAMR amr2 = goAmr2.AddComponent<RobotAMR>();
+            amr2.idRobot = "AMR-02";
+            amr2.bateriaActual = 18.0f;
+            amr2.estadoActual = RobotAMR.EstadoRobot.Transportando;
+            amr2.transform.position = new Vector3(10f, 0f, -20.0f);
+            amr2.transform.rotation = Quaternion.identity;
+
+            Assert.AreEqual(1, RobotAMR.CompararPosicionAdelanteAtras(
+                new Vector2(10f, -20.0f), new Vector2(0f, 1f),
+                new Vector2(10f, -22.0f), new Vector2(0f, 1f)));
+            Assert.AreEqual(-1, RobotAMR.CompararPosicionAdelanteAtras(
+                new Vector2(10f, -22.0f), new Vector2(0f, 1f),
+                new Vector2(10f, -20.0f), new Vector2(0f, 1f)));
+
+            Assert.IsFalse(amr2.DebeCederPasoA(amr));
+            Assert.IsTrue(amr.DebeCederPasoA(amr2));
+
+            // Incluso a dist < 1.35m (1.10m), el líder NO frena en seco y el seguidor sí guarda distancia
+            bool liderFrena = RobotAMR.EvaluarConflictoBurbujaVDA(
+                new Vector2(10f, -20.0f), new Vector2(0f, 1f),
+                new Vector2(10f, -21.1f), new Vector2(0f, 1f),
+                2.50f);
+            bool seguidorCede = RobotAMR.EvaluarConflictoBurbujaVDA(
+                new Vector2(10f, -21.1f), new Vector2(0f, 1f),
+                new Vector2(10f, -20.0f), new Vector2(0f, 1f),
+                2.50f);
+            Assert.IsFalse(liderFrena);
+            Assert.IsTrue(seguidorCede);
+
+            // Al abrirse la brecha por encima del radio de salida (2.85m >= 2.80m), el seguidor reanuda sin quedar congelado
+            bool seguidorSigueBloqueado = RobotAMR.EvaluarConflictoBurbujaVDA(
+                new Vector2(10f, -22.85f), new Vector2(0f, 1f),
+                new Vector2(10f, -20.0f), new Vector2(0f, 1f),
+                2.80f);
+            Assert.IsFalse(seguidorSigueBloqueado);
+
+            // Caso 2: Ambos descargados (Recargando adelante vs En_Transito atrás) -> gana quien va adelante
+            amr.estadoActual = RobotAMR.EstadoRobot.En_Transito;
+            amr2.estadoActual = RobotAMR.EstadoRobot.Recargando;
+            Assert.AreEqual(amr.ObtenerPrioridadVDA(amr), amr2.ObtenerPrioridadVDA(amr2));
+            Assert.IsFalse(amr2.DebeCederPasoA(amr));
+            Assert.IsTrue(amr.DebeCederPasoA(amr2));
+
+            // Ambos en En_Transito: también gana quien va adelante
+            amr2.estadoActual = RobotAMR.EstadoRobot.En_Transito;
+            Assert.IsFalse(amr2.DebeCederPasoA(amr));
+            Assert.IsTrue(amr.DebeCederPasoA(amr2));
+
+            // Caso 3: Empate geométrico frente a frente con misma carga -> desempate determinista por índice (AMR-01 > AMR-02)
+            amr.transform.position = new Vector3(10f, 0f, -22.0f);
+            amr.transform.rotation = Quaternion.identity; // +Z
+            amr2.transform.position = new Vector3(10f, 0f, -20.0f);
+            amr2.transform.rotation = Quaternion.Euler(0f, 180f, 0f); // -Z
+
+            Assert.AreEqual(0, RobotAMR.CompararPosicionAdelanteAtras(
+                new Vector2(10f, -22.0f), new Vector2(0f, 1f),
+                new Vector2(10f, -20.0f), new Vector2(0f, -1f)));
             Assert.IsFalse(amr.DebeCederPasoA(amr2));
             Assert.IsTrue(amr2.DebeCederPasoA(amr));
         }

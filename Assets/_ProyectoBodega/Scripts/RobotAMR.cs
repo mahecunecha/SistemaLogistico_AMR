@@ -286,7 +286,6 @@ public class RobotAMR : MonoBehaviour
         if (agente == null || !agente.enabled) return;
 
         int offsetDesempate = Mathf.Max(0, ObtenerIndiceUnidad() - 1);
-        bool restringido = TieneRestriccionPotenciaOVelocidad;
 
         switch (estadoActual)
         {
@@ -324,18 +323,20 @@ public class RobotAMR : MonoBehaviour
         switch (estadoActual)
         {
             case EstadoRobot.Transportando:
-                agente.avoidancePriority = Mathf.Min(99, (restringido ? 65 : 20) + offsetDesempate);
+                agente.avoidancePriority = Mathf.Min(99, 20 + offsetDesempate);
                 agente.obstacleAvoidanceType = ObstacleAvoidanceType.MedQualityObstacleAvoidance;
                 break;
 
             case EstadoRobot.En_Transito:
-                agente.avoidancePriority = Mathf.Min(99, (restringido ? 72 : 50) + offsetDesempate);
+                agente.avoidancePriority = Mathf.Min(99, 50 + offsetDesempate);
                 agente.obstacleAvoidanceType = ObstacleAvoidanceType.MedQualityObstacleAvoidance;
                 break;
 
             case EstadoRobot.Recargando:
-                agente.avoidancePriority = Mathf.Min(99, (restringido ? 86 : 80) + offsetDesempate);
-                agente.obstacleAvoidanceType = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
+                agente.avoidancePriority = Mathf.Min(99, (acopladoEnPadInductivo ? 80 : 50) + offsetDesempate);
+                agente.obstacleAvoidanceType = acopladoEnPadInductivo
+                    ? ObstacleAvoidanceType.HighQualityObstacleAvoidance
+                    : ObstacleAvoidanceType.MedQualityObstacleAvoidance;
                 break;
 
             case EstadoRobot.Inactivo:
@@ -2779,11 +2780,20 @@ public class RobotAMR : MonoBehaviour
         return Mathf.Max(1.0f, acc);
     }
 
+    public static bool EsEstadoCargadoMovimiento(EstadoRobot estado)
+    {
+        return estado == EstadoRobot.Transportando;
+    }
+
+    public static bool EsEstadoDescargadoMovimiento(EstadoRobot estado)
+    {
+        return estado == EstadoRobot.En_Transito || estado == EstadoRobot.Recargando;
+    }
+
     public int ObtenerPrioridadVDA(RobotAMR r)
     {
         if (r == null) return 0;
 
-        bool restringido = r.TieneRestriccionPotenciaOVelocidad;
         switch (r.estadoActual)
         {
             case EstadoRobot.Extrayendo:
@@ -2791,14 +2801,37 @@ public class RobotAMR : MonoBehaviour
             case EstadoRobot.Interrumpido:
                 return 10;
             case EstadoRobot.Transportando:
-                return restringido ? 3 : 8;
+                return 8;
             case EstadoRobot.En_Transito:
-                return restringido ? 2 : 7;
             case EstadoRobot.Recargando:
-                return restringido ? 1 : 4;
+                return 5;
             default:
                 return 0;
         }
+    }
+
+    public static int CompararPosicionAdelanteAtras(
+        Vector2 posMia,
+        Vector2 dirMiMov,
+        Vector2 posOtro,
+        Vector2 dirOtroMov)
+    {
+        Vector2 haciaOtro = posOtro - posMia;
+        float dist = haciaOtro.magnitude;
+        if (dist < 0.001f) return 0;
+        if (dirMiMov.sqrMagnitude <= 0.0001f || dirOtroMov.sqrMagnitude <= 0.0001f) return 0;
+
+        Vector2 dirHaciaOtro = haciaOtro / dist;
+        Vector2 dirMi = dirMiMov.normalized;
+        Vector2 dirOtro = dirOtroMov.normalized;
+
+        float otroFrenteAMi = Vector2.Dot(dirMi, dirHaciaOtro);
+        float yoFrenteAOtro = Vector2.Dot(dirOtro, -dirHaciaOtro);
+        float ventaja = yoFrenteAOtro - otroFrenteAMi;
+
+        if (ventaja > 0.20f) return 1;
+        if (ventaja < -0.20f) return -1;
+        return 0;
     }
 
     public bool DebeCederPasoA(RobotAMR otro)
@@ -2835,31 +2868,44 @@ public class RobotAMR : MonoBehaviour
                                   otro.estadoActual == EstadoRobot.Interrumpido;
         if (otroEnManiobraFija) return true;
 
-        // Regla 4: Prioridad energética — un AMR con batería < 20% o restricción de potencia/velocidad
-        // cede el paso a otro AMR sano sin restricción y con mayor nivel de batería.
-        bool yoRestringido = TieneRestriccionPotenciaOVelocidad;
-        bool otroRestringido = otro.TieneRestriccionPotenciaOVelocidad;
-        if (yoRestringido && !otroRestringido && otro.bateriaActual > bateriaActual) return true;
-        if (!yoRestringido && otroRestringido && bateriaActual > otro.bateriaActual) return false;
+        // Regla 4: Prioridad por carga — solo cuando uno va cargado (Transportando)
+        // y el otro descargado (En_Transito / Recargando). Sin sesgo por batería < 20%.
+        bool yoCargado = EsEstadoCargadoMovimiento(estadoActual);
+        bool otroCargado = EsEstadoCargadoMovimiento(otro.estadoActual);
+        bool yoDescargado = EsEstadoDescargadoMovimiento(estadoActual);
+        bool otroDescargado = EsEstadoDescargadoMovimiento(otro.estadoActual);
+        if (yoCargado && otroDescargado) return false;
+        if (yoDescargado && otroCargado) return true;
 
-        // Regla 5: En igual condición de restricción/batería, priorizar Transportando > En_Transito > Recargando
+        // Regla 5: Si ambos están cargados o ambos descargados, tiene prioridad quien va adelante;
+        // el AMR que viene detrás cede y guarda distancia.
+        if ((yoCargado && otroCargado) || (yoDescargado && otroDescargado))
+        {
+            Vector2 posMia = new Vector2(transform.position.x, transform.position.z);
+            Vector2 posOtro = new Vector2(otro.transform.position.x, otro.transform.position.z);
+            int posRelativa = CompararPosicionAdelanteAtras(
+                posMia,
+                ObtenerDireccionMovimientoPlana(this),
+                posOtro,
+                ObtenerDireccionMovimientoPlana(otro));
+            if (posRelativa > 0) return false;
+            if (posRelativa < 0) return true;
+        }
+
+        // Regla 6: Prioridad operativa VDA residual (ej. unidad en movimiento vs. Inactivo)
         int miPrio = ObtenerPrioridadVDA(this);
         int otroPrio = ObtenerPrioridadVDA(otro);
         if (otroPrio != miPrio) return otroPrio > miPrio;
 
-        // Regla 6: Desempate determinista por índice de unidad
+        // Regla 7: Desempate determinista por índice de unidad (frente a frente o empate geométrico)
         return ObtenerIndiceUnidad() > otro.ObtenerIndiceUnidad();
     }
 
-    public static bool ConvergeOAlcanzaPorDetras(
+    public static bool EvaluarConflictoBurbujaVDA(
         Vector2 posMia,
         Vector2 dirMiMov,
-        bool yoRestringido,
-        float miBateria,
         Vector2 posOtro,
         Vector2 dirOtroMov,
-        bool otroRestringido,
-        float otroBateria,
         float umbralBurbuja)
     {
         Vector2 haciaOtro = posOtro - posMia;
@@ -2867,15 +2913,21 @@ public class RobotAMR : MonoBehaviour
         if (dist >= umbralBurbuja) return false;
 
         Vector2 dirHaciaOtro = dist > 0.001f ? (haciaOtro / dist) : Vector2.zero;
-        bool otroSeAproxima = dirOtroMov.sqrMagnitude > 0.0001f &&
-                              (Vector2.Dot(dirOtroMov.normalized, -dirHaciaOtro) > 0.15f ||
-                               (dirMiMov.sqrMagnitude > 0.0001f && Vector2.Dot(dirMiMov.normalized, dirOtroMov.normalized) > 0.35f));
-        bool otroAlcanzaPorDetras = yoRestringido &&
-                                    !otroRestringido &&
-                                    otroBateria > miBateria &&
-                                    otroSeAproxima;
+        Vector2 dirMi = dirMiMov.sqrMagnitude > 0.0001f ? dirMiMov.normalized : Vector2.zero;
+        Vector2 dirOtro = dirOtroMov.sqrMagnitude > 0.0001f ? dirOtroMov.normalized : Vector2.zero;
 
-        return Vector2.Dot(dirMiMov, dirHaciaOtro) > -0.15f || dist < 1.35f || otroAlcanzaPorDetras;
+        float dotMiHaciaOtro = Vector2.Dot(dirMi, dirHaciaOtro);
+        bool otroDetrasMismoSentido = dirMi.sqrMagnitude > 0.0001f &&
+                                      dirOtro.sqrMagnitude > 0.0001f &&
+                                      dotMiHaciaOtro < -0.35f &&
+                                      Vector2.Dot(dirMi, dirOtro) > 0.50f;
+        if (otroDetrasMismoSentido)
+        {
+            // El líder que avanza en el mismo sentido nunca frena en seco (ni a dist < 1.35m) por un seguidor trasero
+            return false;
+        }
+
+        return dotMiHaciaOtro > -0.15f || dist < 1.35f;
     }
 
     private static Vector2 ObtenerDireccionMovimientoPlana(RobotAMR amr)
@@ -2953,7 +3005,6 @@ public class RobotAMR : MonoBehaviour
         float umbral = cediendoPasoAMR ? RadioBurbujaSalidaVDA : RadioBurbujaEntradaVDA;
         bool debeCeder = false;
         RobotAMR otroEnConflicto = null;
-        bool yoRestringido = TieneRestriccionPotenciaOVelocidad;
 
         for (int i = 0; i < flotaActiva.Count; i++)
         {
@@ -2970,17 +3021,12 @@ public class RobotAMR : MonoBehaviour
 
             Vector2 posOtro = new Vector2(otro.transform.position.x, otro.transform.position.z);
             Vector2 dirOtroMov = ObtenerDireccionMovimientoPlana(otro);
-            bool otroRestringido = otro.TieneRestriccionPotenciaOVelocidad;
 
-            bool trayectoriasConvergen = ConvergeOAlcanzaPorDetras(
+            bool trayectoriasConvergen = EvaluarConflictoBurbujaVDA(
                 posMia,
                 dirMiMov,
-                yoRestringido,
-                bateriaActual,
                 posOtro,
                 dirOtroMov,
-                otroRestringido,
-                otro.bateriaActual,
                 umbral);
 
             if (trayectoriasConvergen && DebeCederPasoA(otro))
@@ -3011,14 +3057,21 @@ public class RobotAMR : MonoBehaviour
             if (otroDetenido)
             {
                 tiempoDetenidoCediendo += Time.deltaTime;
-                bool prioridadPorBateriaSana = otroEnConflicto != null &&
-                                               !yoRestringido &&
-                                               otroEnConflicto.TieneRestriccionPotenciaOVelocidad &&
-                                               bateriaActual > otroEnConflicto.bateriaActual;
-                bool empateMismoNivelRestriccion = otroEnConflicto != null &&
-                                                   yoRestringido == otroEnConflicto.TieneRestriccionPotenciaOVelocidad &&
-                                                   ObtenerIndiceUnidad() < otroEnConflicto.ObtenerIndiceUnidad();
-                bool tienePrioridadDesempate = EstaEvacuandoZonaMuelle() || EstaEvacuandoEstacionASRS() || prioridadPorBateriaSana || empateMismoNivelRestriccion;
+                bool yoCargado = EsEstadoCargadoMovimiento(estadoActual);
+                bool otroDescargado = otroEnConflicto != null && EsEstadoDescargadoMovimiento(otroEnConflicto.estadoActual);
+                bool ventajaCarga = yoCargado && otroDescargado;
+                int posRelativa = otroEnConflicto != null
+                    ? CompararPosicionAdelanteAtras(
+                        posMia,
+                        dirMiMov,
+                        new Vector2(otroEnConflicto.transform.position.x, otroEnConflicto.transform.position.z),
+                        ObtenerDireccionMovimientoPlana(otroEnConflicto))
+                    : 0;
+                bool mismaCondicionCarga = otroEnConflicto != null &&
+                                           (yoCargado == EsEstadoCargadoMovimiento(otroEnConflicto.estadoActual));
+                bool ventajaMismaCarga = mismaCondicionCarga &&
+                                         (posRelativa > 0 || (posRelativa == 0 && ObtenerIndiceUnidad() < otroEnConflicto.ObtenerIndiceUnidad()));
+                bool tienePrioridadDesempate = EstaEvacuandoZonaMuelle() || EstaEvacuandoEstacionASRS() || ventajaCarga || ventajaMismaCarga;
                 float limiteWatchdog = tienePrioridadDesempate ? 1.2f : 1.8f;
 
                 if (tiempoDetenidoCediendo >= limiteWatchdog)
@@ -3213,7 +3266,6 @@ public class RobotAMR : MonoBehaviour
         if (bateriaActual < UmbralSeguridadLiFePO4 && !avisoPotenciaReducida20Registrado)
         {
             avisoPotenciaReducida20Registrado = true;
-            ActualizarJerarquiaNavegacion();
             if (!modoDegradacionActivo)
             {
                 string socTxt = bateriaActual.ToString("F1", CultureInfo.InvariantCulture);
