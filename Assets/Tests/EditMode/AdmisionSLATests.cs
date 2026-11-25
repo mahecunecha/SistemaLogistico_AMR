@@ -486,5 +486,84 @@ namespace ProyectoBodega.Tests.EditMode
                 propTms?.SetValue(null, tmsPrevio);
             }
         }
+
+        [Test]
+        public void CierreYReinicioDeTurno_BloqueaDespachosMuestraPopupSeCierraTurnoEIluminaBotonReiniciar()
+        {
+            DashboardUI uiPrevia = DashboardUI.Instance;
+            ModuloDespachoTMS tmsPrevio = ModuloDespachoTMS.Instance;
+            var propUi = typeof(DashboardUI).GetProperty("Instance", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            var propTms = typeof(ModuloDespachoTMS).GetProperty("Instance", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+
+            try
+            {
+                GameObject goUi = CrearObjetoTemporal("Test_DashboardUI_Cierre");
+                DashboardUI ui = goUi.AddComponent<DashboardUI>();
+                propUi?.SetValue(null, ui);
+                ui.ConfigurarBarraOperativaInferior();
+
+                GameObject goTms = CrearObjetoTemporal("Test_TMS_Cierre");
+                ModuloDespachoTMS tms = goTms.AddComponent<ModuloDespachoTMS>();
+                propTms?.SetValue(null, tms);
+                tms.muelleCamion01 = CrearObjetoTemporal("M1_Cierre").transform;
+                tms.muelleCamion02 = CrearObjetoTemporal("M2_Cierre").transform;
+                tms.muelleCamion03 = CrearObjetoTemporal("M3_Cierre").transform;
+
+                RobotManagerEVE eve = CrearEVE();
+                eve.gestorTMS = tms;
+                RobotAMR r1 = CrearObjetoTemporal("AMR01_Cierre").AddComponent<RobotAMR>();
+                r1.idRobot = "AMR-01";
+                r1.bateriaActual = 45.0f;
+                r1.estadoActual = RobotAMR.EstadoRobot.Inactivo;
+                eve.robotAMR_01 = r1;
+
+                eve.IniciarTurno();
+                ui.ConfigurarBarraOperativaInferior();
+                Assert.IsFalse(eve.turnoCerrado);
+                Assert.IsFalse(ui.IluminacionReiniciarTurnoActiva);
+
+                eve.EvaluarIngestaAutonoma(CrearManifiestoLote("LOTE-CIERRE", 10));
+                Assert.AreEqual(10, eve.palletsEnColaWMS);
+
+                // Al llegar al cierre de jornada (02:00:00 / 8h), EVE cierra turno, detiene admisión, abre pop-up y alumbra botón
+                RelojSimuladorTurno.EstablecerHoraSimuladorInterno(8.0f);
+                Assert.IsTrue(eve.EvaluarCierreTurnoSiCorresponde());
+                Assert.IsTrue(eve.turnoCerrado);
+                Assert.IsFalse(eve.turnoIniciado);
+                Assert.IsFalse(eve.PuedeRecibirNuevosPedidos(out _, out _));
+                Assert.IsTrue(ui.PopupCierreTurnoActivo);
+                object tituloComp = typeof(DashboardUI).GetField("txtTituloPopupSLA")?.GetValue(ui);
+                Assert.IsNotNull(tituloComp);
+                string tituloPopup = tituloComp.GetType().GetProperty("text")?.GetValue(tituloComp) as string;
+                StringAssert.Contains("Se cierra turno", tituloPopup);
+                Assert.IsTrue(ui.IluminacionReiniciarTurnoActiva);
+                Assert.IsNotNull(ui.imgHaloReiniciarTurno);
+                Assert.IsTrue(ui.imgHaloReiniciarTurno.gameObject.activeSelf);
+
+                // Pulsar Reiniciar Turno limpia estado, apaga iluminación/pop-up y restaura reloj y flota
+                ui.OnClickReiniciarTurno();
+                Assert.IsFalse(eve.turnoCerrado);
+                Assert.IsTrue(eve.turnoIniciado);
+                Assert.AreEqual(0, eve.palletsEnColaWMS);
+                Assert.IsFalse(ui.PopupCierreTurnoActivo);
+                Assert.IsFalse(ui.IluminacionReiniciarTurnoActiva);
+                Assert.IsFalse(ui.imgHaloReiniciarTurno.gameObject.activeSelf);
+                Assert.AreEqual(80.0f, r1.bateriaActual, 1e-3f);
+                Assert.AreEqual(RobotAMR.EstadoRobot.Inactivo, r1.estadoActual);
+                Assert.AreEqual("18:00:00", RelojSimuladorTurno.HoraActualFormateada);
+            }
+            finally
+            {
+                propUi?.SetValue(null, uiPrevia);
+                propTms?.SetValue(null, tmsPrevio);
+            }
+        }
+
+        private GameObject CrearObjetoTemporal(string nombre)
+        {
+            GameObject go = new GameObject(nombre);
+            objetosTemporales.Add(go);
+            return go;
+        }
     }
 }

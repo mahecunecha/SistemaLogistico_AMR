@@ -281,6 +281,7 @@ namespace ProyectoBodega.Tests.EditMode
             Assert.AreEqual(0, eve.ContarAMRsRecuperablesEnTurno());
             Assert.IsTrue(eve.turnoEnFaseCritica);
             Assert.IsTrue(eve.operacionDetenidaPorSeguridad);
+            Assert.IsTrue(eve.turnoCerrado);
             Assert.IsFalse(eve.SolicitarAutorizacionReincorporacion(amr2));
         }
 
@@ -380,18 +381,40 @@ namespace ProyectoBodega.Tests.EditMode
             Assert.AreEqual(velSanaTransito * 0.5f, amr.ObtenerVelocidadNominal(), 1e-4f);
             Assert.AreEqual(accSanaTransito * 0.5f, amr.ObtenerAceleracionNominal(), 1e-4f);
 
-            // Y en Transportando con pedido base (1000 kg -> 1.5 m/s * 0.5 = 0.75 m/s)
+            // Y en Transportando con pedido base (1000 kg -> 0.65 m/s * 0.5 = 0.325 m/s bajo tope real 1.25 m/s)
             GameObject destino = CrearObjetoTemporal("Rack_Potencia_Test");
             amr.bateriaActual = 50.0f;
             amr.estadoActual = RobotAMR.EstadoRobot.Inactivo;
             amr.AsignarMision(new Pedido { id_pallet = "PAL-P20", peso_kg = 1000f, coordenada_bodega = "P1-C1-F1" }, destino.transform, 0);
             amr.estadoActual = RobotAMR.EstadoRobot.Transportando;
             float velSanaCarga = amr.ObtenerVelocidadNominal();
-            Assert.AreEqual(1.50f, velSanaCarga, 1e-3f);
+            Assert.AreEqual(0.65f, velSanaCarga, 1e-3f);
 
             amr.bateriaActual = 19.0f;
-            Assert.AreEqual(0.75f, amr.ObtenerVelocidadNominal(), 1e-3f);
+            Assert.AreEqual(0.325f, amr.ObtenerVelocidadNominal(), 1e-3f);
             Assert.AreEqual(8.0f, amr.ObtenerAceleracionNominal(), 1e-3f);
+        }
+
+        [Test]
+        public void CalibracionKMF1500PCB_6000Wh_Velocidad125MsYElevacion3Kw_RespetaConversionWhAPorcentaje()
+        {
+            Assert.AreEqual(1.25f, RobotAMR.VelocidadMaximaNominalKMF, 1e-4f);
+            Assert.AreEqual(1.25f, amr.VelocidadBase, 1e-4f);
+            Assert.AreEqual(6000f, RobotAMR.CapacidadPackWh, 1e-3f);
+            Assert.AreEqual(0.75f, RobotAMR.PotenciaMediaOperativaKw, 1e-3f);
+            Assert.AreEqual(2.6f, RobotAMR.PotenciaTraccionNominalKw, 1e-3f);
+            Assert.AreEqual(3.0f, RobotAMR.PotenciaElevacionNominalKw, 1e-3f);
+
+            Assert.AreEqual(1.0f, RobotAMR.ConvertirWhAPorcentajeSoC(60.0f), 1e-5f);
+            Assert.AreEqual(60.0f, RobotAMR.ConvertirPorcentajeSoCAWh(1.0f), 1e-4f);
+
+            float gastoWhCargado920 = RobotAMR.CalcularConsumoTramoWh(100f, 920f, amr.coeficienteVacio, amr.coeficienteCarga, true, 1.15f);
+            Assert.AreEqual(90.1416f, gastoWhCargado920, 1e-3f);
+
+            // Elevación nominal 3.0 kW en pedido base 1,000 kg durante 12 s = 10 Wh = 0.166667% SoC
+            float elevacionWh = RobotAMR.CalcularConsumoElevacionWh(12.0f, 1000f);
+            Assert.AreEqual(10.0f, elevacionWh, 1e-3f);
+            Assert.AreEqual(10.0f / 60.0f, RobotAMR.CalcularConsumoElevacionPct(12.0f, 1000f), 1e-5f);
         }
 
         [Test]

@@ -80,6 +80,19 @@ public class DronMantenimiento : MonoBehaviour
         ActualizarEstadoOperativo(EstadoOperativoDron.EnBase, "EN BASE (STANDBY)");
     }
 
+    public void ReiniciarBaseYEstado()
+    {
+        StopAllCoroutines();
+        transform.position = posicionBaseTecho;
+        transform.rotation = rotacionBase;
+        ocupado = false;
+        tieneCargaAcoplada = false;
+        estadoLedSuccionActivo = false;
+        AplicarExtensionChupa(0.20f);
+        ConfigurarEstadoLedSuccion(false);
+        ActualizarEstadoOperativo(EstadoOperativoDron.EnBase, "EN BASE (STANDBY)");
+    }
+
     private void ResolverReferenciasChupa()
     {
         if (chupaRaiz == null)

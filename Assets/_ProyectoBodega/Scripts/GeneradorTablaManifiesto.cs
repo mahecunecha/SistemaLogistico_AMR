@@ -47,7 +47,8 @@ public class GeneradorTablaManifiesto : MonoBehaviour
             {
                 continue;
             }
-            Destroy(child.gameObject);
+            if (Application.isPlaying) Destroy(child.gameObject);
+            else DestroyImmediate(child.gameObject);
         }
 
         filaResumenGO = null;

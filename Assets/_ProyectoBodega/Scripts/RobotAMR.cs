@@ -75,15 +75,24 @@ public class RobotAMR : MonoBehaviour
     public bool EnParadaSeguridadLiDAR => enParadaSeguridadLiDAR;
     public EstadoRobot EstadoPrevioBloqueo => estadoPrevioBloqueo;
 
-    private float velocidadBase = 3.5f;
+    [Header("Calibración Física KUKA KMP 1500P-CB (6,000 Wh | 1.25 m/s)")]
+    public const float VelocidadMaximaNominalKMF = 1.25f;
+    public const float CoeficientePesoNominal = 0.0006f;
+    public const float CapacidadPackWh = 6000.0f;
+    public const float WhPorPorcentajeSoC = CapacidadPackWh / 100.0f; // 60.0 Wh por 1% SoC
+    public const float PotenciaMediaOperativaKw = 0.75f; // 0.75 kWh/h (750 W)
+    public const float PotenciaTraccionNominalKw = 2.6f; // 2.6 kW
+    public const float PotenciaElevacionNominalKw = 3.0f; // 3.0 kW
+
+    private float velocidadBase = VelocidadMaximaNominalKMF;
     private float aceleracionBase = 20.0f;
-    private float coeficientePeso = 0.002f;
+    private float coeficientePeso = CoeficientePesoNominal;
 
     public float VelocidadBase => velocidadBase;
 
     public void EstablecerVelocidadBase(float nuevaVelocidad)
     {
-        velocidadBase = Mathf.Clamp(nuevaVelocidad, 2.0f, 5.5f);
+        velocidadBase = Mathf.Clamp(nuevaVelocidad, 0.5f, VelocidadMaximaNominalKMF);
         if (agente != null && agente.enabled)
         {
             if (estadoActual == EstadoRobot.En_Transito || estadoActual == EstadoRobot.Transportando)
@@ -216,6 +225,7 @@ public class RobotAMR : MonoBehaviour
         {
             agente.radius = RadioAgenteIndustrial;
             agente.angularSpeed = VelocidadAngularIndustrial;
+            agente.speed = velocidadBase;
             agente.acceleration = aceleracionBase;
             agente.stoppingDistance = 0.0f;
             agente.autoBraking = true;
@@ -266,6 +276,100 @@ public class RobotAMR : MonoBehaviour
         colaWaypoints.Clear();
         LimpiarPalletTemporal();
         LiberarMutexDeRobot(this);
+    }
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void ReiniciarEstaticosSubsistema()
+    {
+        LimpiarEstaticosTrafico();
+    }
+
+    public static void LimpiarEstaticosTrafico()
+    {
+        zonasReservadasMutex.Clear();
+        for (int i = flotaActiva.Count - 1; i >= 0; i--)
+        {
+            if (flotaActiva[i] == null)
+            {
+                flotaActiva.RemoveAt(i);
+            }
+        }
+    }
+
+    public void ReiniciarEstadoUnidadTurno(Vector3 posicionPadBase)
+    {
+        StopAllCoroutines();
+        LiberarReservaSlotTMS();
+        LiberarMutexDeRobot(this);
+
+        LimpiarPalletTemporal();
+        LimpiarCargaRetenidaEnBahia();
+
+        colapsoBMSArmadoPostDescarga = false;
+        retornoACargaPostEntrega6 = false;
+        relevoDiferidoPostEntrega = false;
+        enPausaPreventivaBateria20 = false;
+        avisoPotenciaReducida20Registrado = false;
+        modoDegradacionActivo = false;
+        escalon6Evaluado = false;
+        acopladoEnPadInductivo = false;
+        solicitudReincorporacionPendiente = false;
+        enParadaSeguridadLiDAR = false;
+        enEsperaMutex = false;
+        enEsperaMuelleAbierto = false;
+        cediendoPasoAMR = false;
+        obstaculoDetectado = false;
+        inmunidadDespejeActiva = false;
+        tiempoDetenidoCediendo = 0f;
+        tiempoInmunidadDespeje = 0f;
+        EstaEnRampaActiva = false;
+        SubiendoRampa = false;
+        AnguloPendienteGrados = 0f;
+        pitchVisualSuave = 0f;
+        deltaYVisualSuave = 0f;
+
+        colaWaypoints.Clear();
+        palletObjetivoRecoleccionPasillo = null;
+        pedidoActual = null;
+        destinoActual = null;
+        zonaTransferencia = null;
+        numCamionAsignado = 1;
+        slotLIFOAsignado = 0;
+
+        bateriaActual = 80.0f;
+        velocidadBase = VelocidadMaximaNominalKMF;
+        coeficientePeso = CoeficientePesoNominal;
+        coeficienteCarga = coeficienteCargaNominal > 0f ? coeficienteCargaNominal : 0.00142f;
+        tipoFallaActual = TipoFallaAMR.Ninguna;
+        estadoPreInterrupcionBateria = EstadoRobot.Inactivo;
+        estadoPrevioBloqueo = EstadoRobot.Inactivo;
+        estadoActual = EstadoRobot.Inactivo;
+
+        BoxCollider col = GetComponent<BoxCollider>();
+        if (col != null) col.enabled = true;
+
+        transform.position = posicionPadBase;
+        transform.rotation = Quaternion.identity;
+
+        if (agente != null)
+        {
+            if (!agente.enabled) agente.enabled = true;
+            if (agente.isOnNavMesh)
+            {
+                agente.Warp(posicionPadBase);
+                agente.ResetPath();
+                agente.isStopped = true;
+                agente.velocity = Vector3.zero;
+            }
+            agente.speed = ObtenerVelocidadNominal();
+            agente.acceleration = ObtenerAceleracionNominal();
+            agente.updateRotation = true;
+            agente.autoBraking = true;
+        }
+
+        ActualizarJerarquiaNavegacion();
+        OnEstadoCambiado?.Invoke(estadoActual);
+        DashboardUI.Instance?.ActualizarBateria(idRobot, bateriaActual / 100f, estadoActual);
     }
 
     private int ObtenerIndiceUnidad()
@@ -605,11 +709,18 @@ public class RobotAMR : MonoBehaviour
 
     public float ResolverEjeCarrilX(Vector3 posicion, out Vector3 puntoCarrilNavMesh, Transform rackReferencia = null)
     {
-        // Si la coordenada está en la rampa o interior del Flatbed del camión (Z > -1.0m),
-        // muestrear directamente sobre el NavMesh del camión sin aplicar DesfaseCarrilRack
+        // En rampa o interior del Flatbed del camión (Z > -1.0m), conservar el eje X de la columna asignada
         if (posicion.z > -1.0f)
         {
-            puntoCarrilNavMesh = MuestrearNavMeshOCandidato(posicion, 2.5f);
+            if (NavMesh.SamplePosition(posicion, out NavMeshHit hitCamion, 2.5f, NavMesh.AllAreas))
+            {
+                float xAlineada = Mathf.Abs(hitCamion.position.x - posicion.x) <= 0.45f ? posicion.x : hitCamion.position.x;
+                puntoCarrilNavMesh = new Vector3(xAlineada, hitCamion.position.y, hitCamion.position.z);
+            }
+            else
+            {
+                puntoCarrilNavMesh = posicion;
+            }
             return puntoCarrilNavMesh.x;
         }
 
@@ -724,7 +835,8 @@ public class RobotAMR : MonoBehaviour
         bool origenEnCamion = origen.z > -1.0f;
         bool destinoEnCamion = destino.z > -1.0f;
         bool origenEnZonaMuelle = !origenEnSalaCarga && !destinoEnCamion && origen.z > -4.5f && origen.x > 18.0f;
-        float xCarrilEvacuacion = origenEnZonaMuelle ? (xOrigen - 2.20f) : xOrigen;
+        float xRefMuelle = zonaTransferencia != null ? zonaTransferencia.position.x : xOrigen;
+        float xCarrilEvacuacion = origenEnZonaMuelle ? (Mathf.Min(xOrigen, xRefMuelle) - 2.20f) : xOrigen;
 
         // Caso 1: Ambos puntos dentro de la Sala de Carga
         if (origenEnSalaCarga && destinoEnSalaCarga)
@@ -975,7 +1087,19 @@ public class RobotAMR : MonoBehaviour
         slotLIFOAsignado = 0;
     }
 
-    public static float CalcularConsumoTramo(
+    public static float ConvertirWhAPorcentajeSoC(float energiaWh)
+    {
+        if (energiaWh <= 0f) return 0f;
+        return (energiaWh / CapacidadPackWh) * 100.0f;
+    }
+
+    public static float ConvertirPorcentajeSoCAWh(float deltaSoCPct)
+    {
+        if (deltaSoCPct <= 0f) return 0f;
+        return deltaSoCPct * WhPorPorcentajeSoC;
+    }
+
+    public static float CalcularConsumoTramoWh(
         float distanciaMetros,
         float pesoKg,
         float coefVacio,
@@ -984,11 +1108,39 @@ public class RobotAMR : MonoBehaviour
         float factorRuidoTermico = 1.15f)
     {
         if (distanciaMetros <= 0f) return 0f;
-        if (!cargado)
-        {
-            return distanciaMetros * coefVacio;
-        }
-        return distanciaMetros * coefCarga * (pesoKg / 100f) * factorRuidoTermico;
+        float pct = !cargado
+            ? (distanciaMetros * coefVacio)
+            : (distanciaMetros * coefCarga * (pesoKg / 100f) * factorRuidoTermico);
+        return pct * WhPorPorcentajeSoC;
+    }
+
+    public static float CalcularConsumoElevacionWh(float duracionSegundos, float pesoKg = Pedido.PesoReferenciaBaseKg)
+    {
+        if (duracionSegundos <= 0f) return 0f;
+        float pesoClamped = Mathf.Clamp(
+            pesoKg > 0f ? pesoKg : Pedido.PesoReferenciaBaseKg,
+            Pedido.PesoMinimoIndustrialKg,
+            Pedido.PesoMaximoIndustrialKg);
+        float factorCarga = 1.0f + ((pesoClamped - Pedido.PesoReferenciaBaseKg) * 0.0005f); // 1.00 en base 1,000 kg -> 3.0 kW nominales
+        float potenciaW = (PotenciaElevacionNominalKw * 1000.0f) * factorCarga;
+        return (potenciaW * duracionSegundos) / 3600.0f;
+    }
+
+    public static float CalcularConsumoElevacionPct(float duracionSegundos, float pesoKg = Pedido.PesoReferenciaBaseKg)
+    {
+        return ConvertirWhAPorcentajeSoC(CalcularConsumoElevacionWh(duracionSegundos, pesoKg));
+    }
+
+    public static float CalcularConsumoTramo(
+        float distanciaMetros,
+        float pesoKg,
+        float coefVacio,
+        float coefCarga,
+        bool cargado,
+        float factorRuidoTermico = 1.15f)
+    {
+        return ConvertirWhAPorcentajeSoC(
+            CalcularConsumoTramoWh(distanciaMetros, pesoKg, coefVacio, coefCarga, cargado, factorRuidoTermico));
     }
 
     public static bool EvaluarViabilidadLiFePO4(
@@ -2367,11 +2519,17 @@ public class RobotAMR : MonoBehaviour
             while (tDesliz < duracionDeslizamiento)
             {
                 tDesliz += Time.deltaTime;
-                float factor = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(tDesliz / duracionDeslizamiento));
+                float tNorm = Mathf.Clamp01(tDesliz / duracionDeslizamiento);
+                float factorXZ = Mathf.SmoothStep(0f, 1f, tNorm);
+                float factorY = tNorm <= 0.45f
+                    ? 0f
+                    : Mathf.SmoothStep(0f, 1f, (tNorm - 0.45f) / 0.55f);
                 if (palletEntregado != null)
                 {
-                    palletEntregado.transform.position = Vector3.Lerp(posInicioDeslizamiento, destinoSlotLIFO, factor);
-                    palletEntregado.transform.rotation = Quaternion.Slerp(rotInicioDeslizamiento, rotacionSlot, factor);
+                    Vector3 posXZ = Vector3.Lerp(posInicioDeslizamiento, destinoSlotLIFO, factorXZ);
+                    float yActual = Mathf.Lerp(posInicioDeslizamiento.y, destinoSlotLIFO.y, factorY);
+                    palletEntregado.transform.position = new Vector3(posXZ.x, yActual, posXZ.z);
+                    palletEntregado.transform.rotation = Quaternion.Slerp(rotInicioDeslizamiento, rotacionSlot, factorXZ);
                 }
                 yield return null;
             }
@@ -2517,6 +2675,7 @@ public class RobotAMR : MonoBehaviour
 
             Vector3 posPad = (managerEVE != null) ? managerEVE.ObtenerPosicionPadPorUnidad(this) : transform.position;
             EnviarACargaInductiva(posPad);
+            managerEVE?.NotificarRetiroACargaPostEntrega(this);
             yield break;
         }
 
@@ -2728,7 +2887,7 @@ public class RobotAMR : MonoBehaviour
     public float ObtenerVelocidadTransporteParaPeso(float pesoKg)
     {
         float pesoAplicado = pesoKg > 0f ? pesoKg : Pedido.PesoReferenciaBaseKg;
-        return Mathf.Max(0.5f, velocidadBase - (pesoAplicado * coeficientePeso));
+        return Mathf.Max(0.35f, velocidadBase - (pesoAplicado * coeficientePeso));
     }
 
     public float ObtenerVelocidadNominal()
@@ -2754,7 +2913,7 @@ public class RobotAMR : MonoBehaviour
             vel *= CalcularFactorVelocidadRampa(true, SubiendoRampa, TieneCargaFisica, pesoActual);
         }
 
-        return Mathf.Max(0.5f, vel);
+        return Mathf.Max(0.15f, vel);
     }
 
     public float ObtenerAceleracionNominal()
@@ -2763,7 +2922,7 @@ public class RobotAMR : MonoBehaviour
         if (estadoActual == EstadoRobot.Transportando && pedidoActual != null)
         {
             float peso = pedidoActual.peso_kg > 0f ? pedidoActual.peso_kg : Pedido.PesoReferenciaBaseKg;
-            acc = Mathf.Max(1.0f, aceleracionBase - (peso * coeficientePeso * 2f));
+            acc = Mathf.Max(1.0f, aceleracionBase - (peso * 0.004f));
         }
 
         if (EnPotenciaReducidaBateria)
@@ -3321,6 +3480,14 @@ public class RobotAMR : MonoBehaviour
         if (!enParadaSeguridadLiDAR && !enEsperaMutex && !cediendoPasoAMR && estadoActual != EstadoRobot.Interrumpido && estadoActual != EstadoRobot.Recargando)
         {
             bateriaActual -= consumoIdle * Time.deltaTime;
+        }
+
+        // Trabajo de elevación / transferencia hidráulica de rodillos (3.0 kW nominales sobre 6,000 Wh)
+        if (!enParadaSeguridadLiDAR &&
+            (estadoActual == EstadoRobot.Extrayendo || estadoActual == EstadoRobot.Entregando))
+        {
+            float pesoElevacion = pedidoActual != null ? pedidoActual.peso_kg : Pedido.PesoReferenciaBaseKg;
+            bateriaActual -= CalcularConsumoElevacionPct(Time.deltaTime, pesoElevacion);
         }
 
         // Matemáticas de Batería (Termodinámica Inyectada)

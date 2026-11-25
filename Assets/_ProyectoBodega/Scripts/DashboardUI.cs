@@ -161,6 +161,14 @@ public class DashboardUI : MonoBehaviour
     public Button btnPausaSimulacion;
     public Image imgBtnPausaSimulacion;
     public TextMeshProUGUI txtBtnPausaSimulacion;
+    public Button btnReiniciarTurno;
+    public Image imgBtnReiniciarTurno;
+    public TextMeshProUGUI txtBtnReiniciarTurno;
+    public Outline outlineBtnReiniciarTurno;
+    public Image imgHaloReiniciarTurno;
+
+    public bool IluminacionReiniciarTurnoActiva { get; private set; } = false;
+    public bool PopupCierreTurnoActivo { get; private set; } = false;
 
     [Header("Control de Ingesta JSON (Estado y Capacidad)")]
     public Button btnIngestarJSON;
@@ -175,13 +183,21 @@ public class DashboardUI : MonoBehaviour
 
     private RobotManagerEVE eveSuscritoPausa;
     private RobotManagerEVE eveSuscritoAdmisionJSON;
+    private RobotManagerEVE eveSuscritoTurno;
     private Coroutine rutinaAutoCierrePopupCapacidad;
+    private Coroutine rutinaHaloReiniciarTurno;
     private bool? ultimoEstadoBtnJsonDisponible;
     private string ultimoTextoBtnJson = string.Empty;
     private float tiempoProximoCheckBtnJson = 0f;
     private int ultimoFrameTogglePausa = -1;
+    private int ultimoFrameReiniciarTurno = -1;
     private static readonly Color ColorBtnPausaNormal = new Color(0.118f, 0.161f, 0.231f, 1f);
     private static readonly Color ColorBtnPausaActiva = new Color(0.706f, 0.325f, 0.035f, 1f);
+    private static readonly Color ColorBtnReiniciarBase = new Color(0.118f, 0.161f, 0.231f, 1f);
+    private static readonly Color ColorBtnReiniciarIluminado = new Color(0.086f, 0.640f, 0.415f, 1f);
+    private static readonly Color ColorBtnReiniciarPicoHalo = new Color(0.180f, 0.855f, 0.560f, 1f);
+    private static readonly Color ColorHaloReiniciar = new Color(0.200f, 0.980f, 0.680f, 0.78f);
+    private static readonly Color ColorOutlineReiniciar = new Color(0.250f, 1.000f, 0.720f, 0.95f);
     private static readonly Color ColorBtnJsonDisponible = new Color(0.086f, 0.565f, 0.341f, 1f);
     private static readonly Color ColorBtnJsonBloqueado = new Color(0.765f, 0.165f, 0.188f, 1f);
 
@@ -884,8 +900,10 @@ public class DashboardUI : MonoBehaviour
     }
 
     private Queue<string> logQueue = new Queue<string>();
-    private const int MaxLineas = 60;
+    private const int MaxLineas = 120;
     private StringBuilder stringBuilderLog = new StringBuilder(4096);
+    private bool autoScrollTerminalEVE = true;
+    private bool actualizandoScrollTerminalInterno = false;
 
     void Awake()
     {
@@ -1220,6 +1238,8 @@ public class DashboardUI : MonoBehaviour
             var t = panelTerminalRect.Find("Header_Terminal/Btn_Toggle_Terminal/Text (TMP)");
             if (t != null) txtBtnToggleTerminal = t.GetComponent<TextMeshProUGUI>();
         }
+
+        ConfigurarScrollTerminalEVE();
     }
 
     public void TogglePanelManifiesto()
@@ -1362,8 +1382,12 @@ public class DashboardUI : MonoBehaviour
             if (scrollbar != null) scrollbar.gameObject.SetActive(true);
             if (scroll != null)
             {
+                ConfigurarScrollTerminalEVE();
                 scroll.enabled = true;
+                actualizandoScrollTerminalInterno = true;
+                autoScrollTerminalEVE = true;
                 scroll.verticalNormalizedPosition = 0f;
+                actualizandoScrollTerminalInterno = false;
             }
             if (txtBtnToggleTerminal != null) txtBtnToggleTerminal.text = "[-]";
         }
@@ -1444,6 +1468,7 @@ public class DashboardUI : MonoBehaviour
 
         RobotManagerEVE eve = RobotManagerEVE.Instance;
         bool turnoIniciado = eve != null && eve.turnoIniciado;
+        bool turnoCerrado = eve != null && eve.turnoCerrado;
         bool faseCritica = eve != null && (eve.turnoEnFaseCritica || eve.operacionDetenidaPorSeguridad);
         bool pausada = eve != null && eve.SimulacionPausada;
         bool bloqueoAdmision = eve != null && eve.admisionNuevosPedidosBloqueada;
@@ -1455,7 +1480,13 @@ public class DashboardUI : MonoBehaviour
         Color colorAcento;
         Color colorRestante;
 
-        if (faseCritica)
+        if (turnoCerrado)
+        {
+            estadoTexto = "SE CIERRA TURNO";
+            colorAcento = new Color(0.94f, 0.27f, 0.27f, 1f);
+            colorRestante = colorAcento;
+        }
+        else if (faseCritica)
         {
             estadoTexto = "PARADA SEGURIDAD";
             colorAcento = new Color(0.94f, 0.27f, 0.27f, 1f);
@@ -1559,6 +1590,13 @@ public class DashboardUI : MonoBehaviour
             eveSuscritoAdmisionJSON = null;
         }
 
+        if (eveSuscritoTurno != null)
+        {
+            eveSuscritoTurno.OnTurnoCerrado -= OnTurnoCerradoDesdeEVE;
+            eveSuscritoTurno.OnTurnoReiniciado -= OnTurnoReiniciadoDesdeEVE;
+            eveSuscritoTurno = null;
+        }
+
         if (audioSuscritoAlarma != null)
         {
             audioSuscritoAlarma.OnEstadoAlarmaFabricaCambiado -= OnEstadoAlarmaFabricaCambiado;
@@ -1569,6 +1607,11 @@ public class DashboardUI : MonoBehaviour
         {
             tmsSuscritoMuelle.OnEstadoClausuraMuelleCambiado -= OnEstadoClausuraMuelleCambiado;
             tmsSuscritoMuelle = null;
+        }
+
+        if (scrollTerminalEVE != null)
+        {
+            scrollTerminalEVE.onValueChanged.RemoveListener(OnScrollTerminalEVEValueChanged);
         }
 
         if (Time.timeScale == 0f)
@@ -1598,8 +1641,23 @@ public class DashboardUI : MonoBehaviour
         if (rutinaAutoCierrePopup != null)
         {
             StopCoroutine(rutinaAutoCierrePopup);
+            rutinaAutoCierrePopup = null;
         }
-        rutinaAutoCierrePopup = StartCoroutine(AutoCerrarPopupSLA(Mathf.Max(0.5f, duracion)));
+        if (duracion > 0f)
+        {
+            PopupCierreTurnoActivo = false;
+            rutinaAutoCierrePopup = StartCoroutine(AutoCerrarPopupSLA(Mathf.Max(0.5f, duracion)));
+        }
+    }
+
+    public void MostrarPopUpCierreTurno(string motivoDetalle)
+    {
+        string detalle = !string.IsNullOrEmpty(motivoDetalle)
+            ? $"{motivoDetalle}\nDespachos bloqueados. Pulse el botón luminoso <b>REINICIAR TURNO</b> para iniciar un nuevo turno."
+            : "Jornada finalizada y despachos detenidos. Pulse el botón luminoso <b>REINICIAR TURNO</b> para continuar.";
+
+        MostrarPopUpEjecutivoSLA("<color=#F59E0B>Se cierra turno</color>", detalle, -1f);
+        PopupCierreTurnoActivo = true;
     }
 
     private IEnumerator AutoCerrarPopupSLA(float duracion)
@@ -1609,6 +1667,7 @@ public class DashboardUI : MonoBehaviour
         {
             panelPopupSLA.SetActive(false);
         }
+        PopupCierreTurnoActivo = false;
         rutinaAutoCierrePopup = null;
     }
 
@@ -1619,6 +1678,7 @@ public class DashboardUI : MonoBehaviour
             StopCoroutine(rutinaAutoCierrePopup);
             rutinaAutoCierrePopup = null;
         }
+        PopupCierreTurnoActivo = false;
         if (panelPopupSLA != null)
         {
             panelPopupSLA.SetActive(false);
@@ -2424,10 +2484,87 @@ public class DashboardUI : MonoBehaviour
         ConfigurarPopUpEjecutivoSLA();
     }
 
+    public void ConfigurarScrollTerminalEVE()
+    {
+        if (scrollTerminalEVE == null)
+        {
+            Transform tPanel = transform.Find("HUD_Operativo/Panel_Terminal_EVE");
+            if (tPanel != null) scrollTerminalEVE = tPanel.GetComponent<ScrollRect>();
+        }
+        if (scrollTerminalEVE == null) return;
+
+        scrollTerminalEVE.vertical = true;
+        scrollTerminalEVE.horizontal = false;
+        scrollTerminalEVE.movementType = ScrollRect.MovementType.Clamped;
+        scrollTerminalEVE.inertia = true;
+        scrollTerminalEVE.scrollSensitivity = 28f;
+
+        if (scrollTerminalEVE.viewport != null)
+        {
+            Image imgViewport = scrollTerminalEVE.viewport.GetComponent<Image>();
+            if (imgViewport != null) imgViewport.raycastTarget = true;
+        }
+        if (textoLogTMP is Graphic gTmp)
+        {
+            gTmp.raycastTarget = true;
+        }
+        if (textoLogLegacy != null)
+        {
+            textoLogLegacy.raycastTarget = true;
+        }
+
+        scrollTerminalEVE.onValueChanged.RemoveListener(OnScrollTerminalEVEValueChanged);
+        scrollTerminalEVE.onValueChanged.AddListener(OnScrollTerminalEVEValueChanged);
+    }
+
+    private void OnScrollTerminalEVEValueChanged(Vector2 pos)
+    {
+        if (actualizandoScrollTerminalInterno || scrollTerminalEVE == null) return;
+        if (scrollTerminalEVE.content == null || scrollTerminalEVE.viewport == null)
+        {
+            autoScrollTerminalEVE = pos.y <= 0.04f;
+            return;
+        }
+
+        float scrollable = scrollTerminalEVE.content.rect.height - scrollTerminalEVE.viewport.rect.height;
+        autoScrollTerminalEVE = scrollable <= 1f || pos.y <= 0.04f;
+    }
+
     public void RegistrarLog(string mensaje)
     {
         string timestamp = $"[{RelojSimuladorTurno.HoraActualFormateada}]";
         string logFinal = $"{timestamp} {mensaje}";
+
+        if (scrollTerminalEVE != null)
+        {
+            scrollTerminalEVE.onValueChanged.RemoveListener(OnScrollTerminalEVEValueChanged);
+            scrollTerminalEVE.onValueChanged.AddListener(OnScrollTerminalEVEValueChanged);
+        }
+
+        float scrollablePrevio = 0f;
+        float distDesdeTope = 0f;
+        bool preservarLecturaManual = false;
+
+        if (scrollTerminalEVE != null && scrollTerminalEVE.content != null && scrollTerminalEVE.viewport != null)
+        {
+            scrollablePrevio = scrollTerminalEVE.content.rect.height - scrollTerminalEVE.viewport.rect.height;
+            if (scrollablePrevio > 4f)
+            {
+                if (scrollTerminalEVE.verticalNormalizedPosition > 0.04f)
+                {
+                    autoScrollTerminalEVE = false;
+                }
+                if (!autoScrollTerminalEVE)
+                {
+                    preservarLecturaManual = true;
+                    distDesdeTope = (1f - Mathf.Clamp01(scrollTerminalEVE.verticalNormalizedPosition)) * scrollablePrevio;
+                }
+            }
+            else
+            {
+                autoScrollTerminalEVE = true;
+            }
+        }
 
         logQueue.Enqueue(logFinal);
 
@@ -2440,13 +2577,33 @@ public class DashboardUI : MonoBehaviour
 
         if (scrollTerminalEVE != null)
         {
+            actualizandoScrollTerminalInterno = true;
             Canvas.ForceUpdateCanvases();
             if (scrollTerminalEVE.content != null)
             {
                 LayoutRebuilder.ForceRebuildLayoutImmediate(scrollTerminalEVE.content);
             }
             Canvas.ForceUpdateCanvases();
-            scrollTerminalEVE.verticalNormalizedPosition = 0f;
+
+            if (preservarLecturaManual && scrollTerminalEVE.content != null && scrollTerminalEVE.viewport != null)
+            {
+                float scrollableNuevo = scrollTerminalEVE.content.rect.height - scrollTerminalEVE.viewport.rect.height;
+                if (scrollableNuevo > 4f)
+                {
+                    scrollTerminalEVE.verticalNormalizedPosition = 1f - Mathf.Clamp01(distDesdeTope / scrollableNuevo);
+                }
+                else
+                {
+                    autoScrollTerminalEVE = true;
+                    scrollTerminalEVE.verticalNormalizedPosition = 0f;
+                }
+            }
+            else if (autoScrollTerminalEVE)
+            {
+                scrollTerminalEVE.verticalNormalizedPosition = 0f;
+            }
+
+            actualizandoScrollTerminalInterno = false;
         }
     }
 
@@ -2494,30 +2651,34 @@ public class DashboardUI : MonoBehaviour
             ? barraOperativaInferior.transform
             : transform.Find("HUD_Operativo/Barra_Operativa_Inferior");
 
-        if (barra == null) return;
-        barraOperativaInferior = barra.gameObject;
+        if (barra != null)
+        {
+            barraOperativaInferior = barra.gameObject;
 
-        if (btnPausaSimulacion == null)
-        {
-            btnPausaSimulacion = barra.Find("Btn_Pausa_Simulacion")?.GetComponent<Button>();
-        }
-        if (imgBtnPausaSimulacion == null && btnPausaSimulacion != null)
-        {
-            imgBtnPausaSimulacion = btnPausaSimulacion.GetComponent<Image>();
-        }
-        if (txtBtnPausaSimulacion == null && btnPausaSimulacion != null)
-        {
-            txtBtnPausaSimulacion = btnPausaSimulacion.GetComponentInChildren<TextMeshProUGUI>(true);
-        }
-
-        if (btnPausaSimulacion != null)
-        {
-            btnPausaSimulacion.onClick.RemoveListener(OnClickPausarReanudarSimulacion);
-            if (btnPausaSimulacion.onClick.GetPersistentEventCount() == 0)
+            if (btnPausaSimulacion == null)
             {
-                btnPausaSimulacion.onClick.AddListener(OnClickPausarReanudarSimulacion);
+                btnPausaSimulacion = barra.Find("Btn_Pausa_Simulacion")?.GetComponent<Button>();
+            }
+            if (imgBtnPausaSimulacion == null && btnPausaSimulacion != null)
+            {
+                imgBtnPausaSimulacion = btnPausaSimulacion.GetComponent<Image>();
+            }
+            if (txtBtnPausaSimulacion == null && btnPausaSimulacion != null)
+            {
+                txtBtnPausaSimulacion = btnPausaSimulacion.GetComponentInChildren<TextMeshProUGUI>(true);
+            }
+
+            if (btnPausaSimulacion != null)
+            {
+                btnPausaSimulacion.onClick.RemoveListener(OnClickPausarReanudarSimulacion);
+                if (btnPausaSimulacion.onClick.GetPersistentEventCount() == 0)
+                {
+                    btnPausaSimulacion.onClick.AddListener(OnClickPausarReanudarSimulacion);
+                }
             }
         }
+
+        AsegurarBotonReiniciarTurno(barra);
 
         RobotManagerEVE eve = ResolverRobotManagerEVE();
 
@@ -2540,6 +2701,292 @@ public class DashboardUI : MonoBehaviour
         {
             ActualizarVisualBotonPausa(false);
         }
+
+        if (eveSuscritoTurno != eve)
+        {
+            if (eveSuscritoTurno != null)
+            {
+                eveSuscritoTurno.OnTurnoCerrado -= OnTurnoCerradoDesdeEVE;
+                eveSuscritoTurno.OnTurnoReiniciado -= OnTurnoReiniciadoDesdeEVE;
+            }
+            eveSuscritoTurno = eve;
+        }
+
+        if (eveSuscritoTurno != null)
+        {
+            eveSuscritoTurno.OnTurnoCerrado -= OnTurnoCerradoDesdeEVE;
+            eveSuscritoTurno.OnTurnoCerrado += OnTurnoCerradoDesdeEVE;
+            eveSuscritoTurno.OnTurnoReiniciado -= OnTurnoReiniciadoDesdeEVE;
+            eveSuscritoTurno.OnTurnoReiniciado += OnTurnoReiniciadoDesdeEVE;
+            ActivarIluminacionBotonReiniciarTurno(eveSuscritoTurno.turnoCerrado);
+        }
+        else
+        {
+            ActivarIluminacionBotonReiniciarTurno(false);
+        }
+    }
+
+    private void AsegurarBotonReiniciarTurno(Transform barra)
+    {
+        Transform contenedor = barra != null ? barra : transform;
+        if (btnReiniciarTurno == null && barra != null)
+        {
+            btnReiniciarTurno = barra.Find("Btn_Reiniciar_Turno")?.GetComponent<Button>();
+        }
+
+        if (btnReiniciarTurno == null)
+        {
+            GameObject goBtn = new GameObject("Btn_Reiniciar_Turno", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image), typeof(Button), typeof(LayoutElement), typeof(Outline), typeof(BotonClickSFX));
+            goBtn.transform.SetParent(contenedor, false);
+            btnReiniciarTurno = goBtn.GetComponent<Button>();
+            imgBtnReiniciarTurno = goBtn.GetComponent<Image>();
+            imgBtnReiniciarTurno.color = ColorBtnReiniciarBase;
+            LayoutElement le = goBtn.GetComponent<LayoutElement>();
+            le.minWidth = 196f;
+            le.preferredWidth = 196f;
+            le.preferredHeight = 36f;
+            le.layoutPriority = 1;
+            outlineBtnReiniciarTurno = goBtn.GetComponent<Outline>();
+            outlineBtnReiniciarTurno.effectColor = new Color(ColorOutlineReiniciar.r, ColorOutlineReiniciar.g, ColorOutlineReiniciar.b, 0f);
+            outlineBtnReiniciarTurno.effectDistance = new Vector2(2.5f, -2.5f);
+
+            GameObject goHalo = new GameObject("Halo_Luminoso_Reiniciar", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image), typeof(Outline));
+            goHalo.transform.SetParent(goBtn.transform, false);
+            RectTransform rtHalo = goHalo.GetComponent<RectTransform>();
+            rtHalo.anchorMin = Vector2.zero;
+            rtHalo.anchorMax = Vector2.one;
+            rtHalo.offsetMin = new Vector2(-6f, -6f);
+            rtHalo.offsetMax = new Vector2(6f, 6f);
+            imgHaloReiniciarTurno = goHalo.GetComponent<Image>();
+            imgHaloReiniciarTurno.color = new Color(ColorHaloReiniciar.r, ColorHaloReiniciar.g, ColorHaloReiniciar.b, 0f);
+            imgHaloReiniciarTurno.raycastTarget = false;
+            Outline haloOut = goHalo.GetComponent<Outline>();
+            haloOut.effectColor = new Color(ColorHaloReiniciar.r, ColorHaloReiniciar.g, ColorHaloReiniciar.b, 0.85f);
+            haloOut.effectDistance = new Vector2(3f, -3f);
+            goHalo.SetActive(false);
+
+            GameObject goTxt = new GameObject("Text (TMP)", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
+            goTxt.transform.SetParent(goBtn.transform, false);
+            RectTransform rtTxt = goTxt.GetComponent<RectTransform>();
+            rtTxt.anchorMin = Vector2.zero;
+            rtTxt.anchorMax = Vector2.one;
+            rtTxt.sizeDelta = Vector2.zero;
+            txtBtnReiniciarTurno = goTxt.GetComponent<TextMeshProUGUI>();
+            txtBtnReiniciarTurno.text = "REINICIAR TURNO";
+            txtBtnReiniciarTurno.fontSize = 14f;
+            txtBtnReiniciarTurno.fontStyle = FontStyles.Bold;
+            txtBtnReiniciarTurno.alignment = TextAlignmentOptions.Center;
+            txtBtnReiniciarTurno.color = Color.white;
+            txtBtnReiniciarTurno.raycastTarget = false;
+        }
+        else
+        {
+            if (imgBtnReiniciarTurno == null) imgBtnReiniciarTurno = btnReiniciarTurno.GetComponent<Image>();
+            if (outlineBtnReiniciarTurno == null) outlineBtnReiniciarTurno = btnReiniciarTurno.GetComponent<Outline>();
+            if (imgHaloReiniciarTurno == null)
+            {
+                imgHaloReiniciarTurno = btnReiniciarTurno.transform.Find("Halo_Luminoso_Reiniciar")?.GetComponent<Image>();
+            }
+            if (txtBtnReiniciarTurno == null)
+            {
+                txtBtnReiniciarTurno = btnReiniciarTurno.transform.Find("Text (TMP)")?.GetComponent<TextMeshProUGUI>()
+                                    ?? btnReiniciarTurno.GetComponentInChildren<TextMeshProUGUI>(true);
+            }
+        }
+
+        if (btnReiniciarTurno != null)
+        {
+            btnReiniciarTurno.onClick.RemoveListener(OnClickReiniciarTurno);
+            if (btnReiniciarTurno.onClick.GetPersistentEventCount() == 0)
+            {
+                btnReiniciarTurno.onClick.AddListener(OnClickReiniciarTurno);
+            }
+        }
+    }
+
+    public void ActivarIluminacionBotonReiniciarTurno(bool activar)
+    {
+        if (btnReiniciarTurno == null)
+        {
+            AsegurarBotonReiniciarTurno(barraOperativaInferior != null ? barraOperativaInferior.transform : null);
+        }
+
+        IluminacionReiniciarTurnoActiva = activar;
+
+        if (rutinaHaloReiniciarTurno != null)
+        {
+            StopCoroutine(rutinaHaloReiniciarTurno);
+            rutinaHaloReiniciarTurno = null;
+        }
+
+        if (activar)
+        {
+            if (imgBtnReiniciarTurno != null)
+            {
+                imgBtnReiniciarTurno.color = ColorBtnReiniciarIluminado;
+            }
+            if (outlineBtnReiniciarTurno != null)
+            {
+                outlineBtnReiniciarTurno.enabled = true;
+                outlineBtnReiniciarTurno.effectColor = ColorOutlineReiniciar;
+                outlineBtnReiniciarTurno.effectDistance = new Vector2(2.5f, -2.5f);
+            }
+            if (imgHaloReiniciarTurno != null)
+            {
+                imgHaloReiniciarTurno.gameObject.SetActive(true);
+                imgHaloReiniciarTurno.color = ColorHaloReiniciar;
+                imgHaloReiniciarTurno.rectTransform.localScale = Vector3.one;
+            }
+            if (txtBtnReiniciarTurno != null)
+            {
+                txtBtnReiniciarTurno.text = "REINICIAR TURNO [!]";
+            }
+
+            if (Application.isPlaying && isActiveAndEnabled && btnReiniciarTurno != null && btnReiniciarTurno.gameObject.activeInHierarchy)
+            {
+                rutinaHaloReiniciarTurno = StartCoroutine(PulsoHaloReiniciarTurno());
+            }
+        }
+        else
+        {
+            if (imgBtnReiniciarTurno != null)
+            {
+                imgBtnReiniciarTurno.color = ColorBtnReiniciarBase;
+            }
+            if (outlineBtnReiniciarTurno != null)
+            {
+                outlineBtnReiniciarTurno.effectColor = new Color(ColorOutlineReiniciar.r, ColorOutlineReiniciar.g, ColorOutlineReiniciar.b, 0f);
+            }
+            if (imgHaloReiniciarTurno != null)
+            {
+                imgHaloReiniciarTurno.color = new Color(ColorHaloReiniciar.r, ColorHaloReiniciar.g, ColorHaloReiniciar.b, 0f);
+                imgHaloReiniciarTurno.rectTransform.localScale = Vector3.one;
+                imgHaloReiniciarTurno.gameObject.SetActive(false);
+            }
+            if (txtBtnReiniciarTurno != null)
+            {
+                txtBtnReiniciarTurno.text = "REINICIAR TURNO";
+            }
+        }
+    }
+
+    private IEnumerator PulsoHaloReiniciarTurno()
+    {
+        float tiempo = 0f;
+        while (IluminacionReiniciarTurnoActiva)
+        {
+            tiempo += Time.unscaledDeltaTime;
+            float pulso = 0.5f * (1f + Mathf.Sin(tiempo * 4.5f));
+
+            if (imgBtnReiniciarTurno != null)
+            {
+                imgBtnReiniciarTurno.color = Color.Lerp(ColorBtnReiniciarIluminado, ColorBtnReiniciarPicoHalo, pulso);
+            }
+            if (outlineBtnReiniciarTurno != null)
+            {
+                Color oc = ColorOutlineReiniciar;
+                oc.a = Mathf.Lerp(0.55f, 1.0f, pulso);
+                outlineBtnReiniciarTurno.effectColor = oc;
+            }
+            if (imgHaloReiniciarTurno != null)
+            {
+                Color hc = ColorHaloReiniciar;
+                hc.a = Mathf.Lerp(0.28f, 0.86f, pulso);
+                imgHaloReiniciarTurno.color = hc;
+                float escala = Mathf.Lerp(1.0f, 1.07f, pulso);
+                imgHaloReiniciarTurno.rectTransform.localScale = new Vector3(escala, escala, 1f);
+            }
+            yield return null;
+        }
+        rutinaHaloReiniciarTurno = null;
+    }
+
+    private void OnTurnoCerradoDesdeEVE(string motivo)
+    {
+        RobotManagerEVE eve = ResolverRobotManagerEVE();
+        bool mantenerModal = eve != null && (eve.turnoEnFaseCritica || eve.operacionDetenidaPorSeguridad);
+        NotificarCierreTurnoEVE(motivo, mantenerModal);
+    }
+
+    private void OnTurnoReiniciadoDesdeEVE()
+    {
+        LimpiarUIAlReiniciarTurno();
+    }
+
+    public void NotificarCierreTurnoEVE(string motivo, bool mantenerModalEmergencia = false)
+    {
+        MostrarPopUpCierreTurno(motivo);
+        ActivarIluminacionBotonReiniciarTurno(true);
+        ActualizarEstadoBotonIngestaJSON();
+        ActualizarVisualBotonPausa(false);
+        ActualizarMarcadorNBAHud(true);
+
+        if (mantenerModalEmergencia && panelEmergencia != null && panelEmergencia.activeSelf && panelPopupSLA != null)
+        {
+            panelPopupSLA.transform.SetAsLastSibling();
+        }
+    }
+
+    public void OnClickReiniciarTurno()
+    {
+        if (ultimoFrameReiniciarTurno == Time.frameCount) return;
+        ultimoFrameReiniciarTurno = Time.frameCount;
+
+        RobotManagerEVE eve = ResolverRobotManagerEVE();
+        if (eve != null)
+        {
+            eve.ReiniciarTurnoCompleto();
+        }
+        else
+        {
+            LimpiarUIAlReiniciarTurno();
+        }
+    }
+
+    public void LimpiarUIAlReiniciarTurno()
+    {
+        ActivarIluminacionBotonReiniciarTurno(false);
+        CerrarPopUpEjecutivoSLA();
+        MostrarEmergencia(false);
+        LimpiarHistorialBuzonSupervisor();
+
+        if (panelPopupCapacidad != null)
+        {
+            panelPopupCapacidad.SetActive(false);
+        }
+
+        if (rutinaDestelloAMR01 != null) { StopCoroutine(rutinaDestelloAMR01); rutinaDestelloAMR01 = null; }
+        if (rutinaDestelloAMR02 != null) { StopCoroutine(rutinaDestelloAMR02); rutinaDestelloAMR02 = null; }
+        if (rutinaDestelloAMR03 != null) { StopCoroutine(rutinaDestelloAMR03); rutinaDestelloAMR03 = null; }
+        if (rutinaDestelloTerminal != null) { StopCoroutine(rutinaDestelloTerminal); rutinaDestelloTerminal = null; }
+        if (imgFilaAMR01 != null) imgFilaAMR01.color = ColorBaseFilaAMR;
+        if (imgFilaAMR02 != null) imgFilaAMR02.color = ColorBaseFilaAMR;
+        if (imgFilaAMR03 != null) imgFilaAMR03.color = ColorBaseFilaAMR;
+        if (imgPanelTerminalEVE != null) imgPanelTerminalEVE.color = ColorBaseTerminalEVE;
+
+        logQueue.Clear();
+        stringBuilderLog.Clear();
+        autoScrollTerminalEVE = true;
+        ActualizarVisual();
+        if (scrollTerminalEVE != null)
+        {
+            actualizandoScrollTerminalInterno = true;
+            scrollTerminalEVE.verticalNormalizedPosition = 0f;
+            actualizandoScrollTerminalInterno = false;
+        }
+
+        ActualizarBateria("AMR-01", 0.80f, RobotAMR.EstadoRobot.Inactivo);
+        ActualizarBateria("AMR-02", 0.80f, RobotAMR.EstadoRobot.Inactivo);
+        ConfigurarReservaAMR02(false);
+        ConfigurarEstadoSoporteAMR03(false);
+        ActualizarEstadoDronSoporte(DronMantenimiento.EstadoOperativoDron.EnBase, "EN BASE (STANDBY)");
+        ActualizarVisualBotonPausa(false);
+        ActualizarVisualControlesPlantaSCADA();
+        ultimoEstadoBtnJsonDisponible = null;
+        ActualizarEstadoBotonIngestaJSON();
+        ultimaClaveMarcadorNBA = string.Empty;
+        ultimaHoraBannerRegistrada = string.Empty;
+        ActualizarMarcadorNBAHud(true);
     }
 
     public void ConfigurarBotonIngestaJSON()

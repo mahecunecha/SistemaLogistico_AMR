@@ -17,6 +17,10 @@ public class RobotManagerEVE : MonoBehaviour
     public event System.Action OnMisionEvaluada;
     public event System.Action<bool> OnPausaCambiada;
     public event System.Action OnEstadoAdmisionJSONCambiado;
+    public event System.Action<string> OnTurnoCerrado;
+    public event System.Action OnTurnoReiniciado;
+
+    private ModuloDespachoTMS tmsSuscritoEventos;
 
     private void NotificarCambioEstadoAdmisionJSON()
     {
@@ -81,8 +85,10 @@ public class RobotManagerEVE : MonoBehaviour
     public bool turnoEnFaseCritica { get; private set; } = false;
     public bool operacionDetenidaPorSeguridad { get; private set; } = false;
     public bool admisionNuevosPedidosBloqueada { get; private set; } = false;
+    public bool turnoCerrado { get; private set; } = false;
     public string motivoFaseCritica { get; private set; } = string.Empty;
     public string motivoBloqueoAdmision { get; private set; } = string.Empty;
+    public string motivoCierreTurno { get; private set; } = string.Empty;
 
     [Header("Zona Técnica / Mantenimiento (AMR Dañados)")]
     public Transform contenedorZonaTecnica;
@@ -149,8 +155,8 @@ public class RobotManagerEVE : MonoBehaviour
     private bool alertaDemandaEnCurso = false;
     private int indiceCicloDemoHorizonte = 0;
 
-    // Control Operativo en Vivo (Módulo 5)
-    public const float VelocidadNominalFlota = 3.5f;
+    // Control Operativo en Vivo (Módulo 5 — Tope físico KMF 1500P-CB 1.25 m/s)
+    public const float VelocidadNominalFlota = RobotAMR.VelocidadMaximaNominalKMF;
     public float VelocidadFlotaActual => VelocidadNominalFlota;
     public bool SimulacionPausada { get; private set; } = false;
 
@@ -208,7 +214,37 @@ public class RobotManagerEVE : MonoBehaviour
         }
         if (robotEjecutor == null) robotEjecutor = robotAMR_01;
 
+        SuscribirEventosTMS();
         CargarManifiesto();
+    }
+
+    private void SuscribirEventosTMS()
+    {
+        if (gestorTMS == null) gestorTMS = ModuloDespachoTMS.Instance != null ? ModuloDespachoTMS.Instance : FindFirstObjectByType<ModuloDespachoTMS>();
+        if (tmsSuscritoEventos != gestorTMS)
+        {
+            if (tmsSuscritoEventos != null)
+            {
+                tmsSuscritoEventos.OnMuellesDisponiblesNuevamente -= OnMuellesTMSDisponiblesNuevamente;
+            }
+            tmsSuscritoEventos = gestorTMS;
+        }
+        if (tmsSuscritoEventos != null)
+        {
+            tmsSuscritoEventos.OnMuellesDisponiblesNuevamente -= OnMuellesTMSDisponiblesNuevamente;
+            tmsSuscritoEventos.OnMuellesDisponiblesNuevamente += OnMuellesTMSDisponiblesNuevamente;
+        }
+    }
+
+    private void OnMuellesTMSDisponiblesNuevamente()
+    {
+        if (!turnoIniciado || turnoCerrado || operacionDetenidaPorSeguridad || turnoEnFaseCritica) return;
+
+        ReevaluarMuellesEnFlotaActiva();
+        if (palletsEnColaWMS > 0)
+        {
+            DespacharColaDisponible();
+        }
     }
 
     void Start()
@@ -240,12 +276,26 @@ public class RobotManagerEVE : MonoBehaviour
         }
 
         if (!turnoIniciado || SimulacionPausada) return;
+
+        if (EvaluarCierreTurnoSiCorresponde())
+        {
+            return;
+        }
+
         MoverPorWaypoints();
 
         if (palletsEnColaWMS > 0 && Time.unscaledTime >= tiempoProximaEvaluacionEficiencia)
         {
             tiempoProximaEvaluacionEficiencia = Time.unscaledTime + 1.0f;
             EvaluarEficienciaOperativaYEscalamiento();
+
+            if (!turnoCerrado && !operacionDetenidaPorSeguridad && !turnoEnFaseCritica &&
+                palletsEnColaWMS > ContarMisionesEnVuelo() &&
+                (gestorTMS == null || gestorTMS.TieneAlgunMuelleAbierto()))
+            {
+                ReevaluarMuellesEnFlotaActiva();
+                DespacharColaDisponible();
+            }
         }
     }
 
@@ -279,6 +329,11 @@ public class RobotManagerEVE : MonoBehaviour
 
     void OnDestroy()
     {
+        if (tmsSuscritoEventos != null)
+        {
+            tmsSuscritoEventos.OnMuellesDisponiblesNuevamente -= OnMuellesTMSDisponiblesNuevamente;
+            tmsSuscritoEventos = null;
+        }
         if (Instance == this)
         {
             Instance = null;
@@ -301,8 +356,10 @@ public class RobotManagerEVE : MonoBehaviour
         turnoEnFaseCritica = false;
         operacionDetenidaPorSeguridad = false;
         admisionNuevosPedidosBloqueada = false;
+        turnoCerrado = false;
         motivoFaseCritica = string.Empty;
         motivoBloqueoAdmision = string.Empty;
+        motivoCierreTurno = string.Empty;
         EficienciaUnitariaAMR01 = 100.0f;
         EficienciaUnitariaAMR02 = 100.0f;
         EficienciaPromedioDual = 100.0f;
@@ -350,6 +407,7 @@ public class RobotManagerEVE : MonoBehaviour
         }
 
         // Arranque en blanco / Standby real
+        SuscribirEventosTMS();
         gestorTMS?.ReiniciarEstadoMuelles();
         FindFirstObjectByType<GeneradorTablaManifiesto>(FindObjectsInactive.Include)?.LimpiarTablaStandby();
         DashboardUI.Instance?.ConfigurarReservaAMR02(false);
@@ -464,6 +522,7 @@ public class RobotManagerEVE : MonoBehaviour
                 : "<color=green>[WMS]:</color> Cola WMS completada. Unidades en espera de nuevas órdenes ERP.";
             DashboardUI.Instance?.RegistrarLog(msgColaFin);
             Debug.Log(msgColaFin);
+            EvaluarCierreTurnoSiCorresponde();
         }
 
         EvaluarEficienciaOperativaYEscalamiento(null, permitirDespachoInmediato: false);
@@ -499,35 +558,226 @@ public class RobotManagerEVE : MonoBehaviour
             DashboardUI.Instance?.ConfigurarReservaAMR02(false);
             DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(false);
             DashboardUI.Instance?.RegistrarLog("<color=green>[WMS]:</color> Cola WMS completada (Con Reprogramaciones). Unidades en espera de nuevas órdenes ERP.");
+            EvaluarCierreTurnoSiCorresponde();
         }
 
         NotificarCambioEstadoAdmisionJSON();
     }
 
-    private void FinalizarTurnoYRetornarACarga(string mensajeCierre)
+    public bool EvaluarCierreTurnoSiCorresponde()
     {
+        if (turnoCerrado) return true;
+        if (!turnoIniciado && !sesionOperativaIniciada) return false;
+
+        if (RelojSimuladorTurno.TurnoSuperoCierre)
+        {
+            CerrarTurnoPorEVE($"Cumplimiento de jornada de 8 horas ({RelojSimuladorTurno.HoraCierreTurnoTexto}).");
+            return true;
+        }
+
+        if (admisionNuevosPedidosBloqueada && palletsEnColaWMS == 0 && ContarMisionesEnVuelo() == 0)
+        {
+            string causa = !string.IsNullOrEmpty(motivoBloqueoAdmision)
+                ? motivoBloqueoAdmision
+                : "Cola WMS completada con admisión bloqueada.";
+            CerrarTurnoPorEVE($"Cola asignada completada con admisión bloqueada ({causa}).");
+            return true;
+        }
+
+        if (TotalIncidentesCriticosTurno > 0 && ContarAMRsRecuperablesEnTurno() == 0)
+        {
+            string causa = !string.IsNullOrEmpty(motivoFaseCritica)
+                ? motivoFaseCritica
+                : "Cero unidades AMR operativas o recuperables.";
+            CerrarTurnoPorEVE(causa, mantenerModalFaseCritica: true);
+            return true;
+        }
+
+        return false;
+    }
+
+    public void CerrarTurnoPorEVE(string motivoCierre, bool mantenerModalFaseCritica = false)
+    {
+        if (turnoCerrado) return;
+
         if (SimulacionPausada)
         {
             SimulacionPausada = false;
             Time.timeScale = 1f;
             OnPausaCambiada?.Invoke(false);
         }
+
+        if (rutinaHeadwayDespacho != null)
+        {
+            StopCoroutine(rutinaHeadwayDespacho);
+            rutinaHeadwayDespacho = null;
+        }
+
+        turnoCerrado = true;
         turnoIniciado = false;
-        Debug.Log(mensajeCierre);
-        DashboardUI.Instance?.RegistrarLog(mensajeCierre);
+        admisionNuevosPedidosBloqueada = true;
+        motivoCierreTurno = !string.IsNullOrEmpty(motivoCierre) ? motivoCierre : "Se cierra turno operativo.";
+        if (string.IsNullOrEmpty(motivoBloqueoAdmision))
+        {
+            motivoBloqueoAdmision = motivoCierreTurno;
+        }
+
+        string horaCierre = RelojSimuladorTurno.HoraActualFormateada;
+        string msgLog = $"<color=#F59E0B><b>[SE CIERRA TURNO — {horaCierre}]:</b></color> {motivoCierreTurno} Nuevos despachos bloqueados hasta reiniciar.";
+        Debug.Log(msgLog);
+        DashboardUI.Instance?.RegistrarLog(msgLog);
+        DashboardUI.Instance?.RegistrarFeedbackSupervisor($"[SE CIERRA TURNO — {horaCierre}]: {motivoCierreTurno}");
+        DashboardUI.Instance?.ActualizarBannerTurno($"<b><color=#EF4444>SE CIERRA TURNO ({horaCierre}):</color> DESPACHOS DETENIDOS — PULSE REINICIAR TURNO</b>");
+
+        if (!mantenerModalFaseCritica)
+        {
+            RobotAMR[] flota = new RobotAMR[] { robotAMR_01, robotAMR_02, robotAMR_03 };
+            for (int i = 0; i < flota.Length; i++)
+            {
+                RobotAMR r = flota[i];
+                if (r != null && r.EsRecuperableEnTurno && r.estadoActual != RobotAMR.EstadoRobot.Recargando && r.estadoActual != RobotAMR.EstadoRobot.Apagado)
+                {
+                    r.EnviarACargaInductiva(ObtenerPosicionPadPorUnidad(r));
+                }
+            }
+            DirectorCinematico.Instance?.ActivarVistaGeneralFinDeTurno();
+        }
+
+        DashboardUI.Instance?.NotificarCierreTurnoEVE(motivoCierreTurno, mantenerModalFaseCritica);
+        NotificarCambioEstadoAdmisionJSON();
+        OnTurnoCerrado?.Invoke(motivoCierreTurno);
+    }
+
+    private void FinalizarTurnoYRetornarACarga(string mensajeCierre)
+    {
+        CerrarTurnoPorEVE(mensajeCierre);
+    }
+
+    public void ReiniciarEstadoPorCompilacion()
+    {
+        StopAllCoroutines();
+        rutinaHeadwayDespacho = null;
+        despachandoDespejeISO = false;
+        alertaDemandaEnCurso = false;
+        Time.timeScale = 1f;
+        SimulacionPausada = false;
+
+        LimpiarResiduosEscenaTurno();
+
+        turnoCerrado = false;
+        turnoIniciado = false;
+        sesionOperativaIniciada = false;
+        motivoCierreTurno = string.Empty;
+        palletsEnColaWMS = 0;
+        palletsCompletadosTurno = 0;
+        flotaEscaladaDual = false;
+        indicePedidoActual = 0;
+        indiceFilaManifiestoGlobal = 0;
+        relevo24_7Activo = false;
+        tiempoProximoDespachoPermitido = 0f;
+        ReiniciarContadoresIncidentesTurno();
+        RelojSimuladorTurno.ReiniciarRelojTurno(0.0f);
+        RobotAMR.LimpiarEstaticosTrafico();
+    }
+
+    public void ReiniciarTurnoCompleto()
+    {
+        StopAllCoroutines();
+        rutinaHeadwayDespacho = null;
+        despachandoDespejeISO = false;
+        alertaDemandaEnCurso = false;
+        SimulacionPausada = false;
+        Time.timeScale = 1f;
+        OnPausaCambiada?.Invoke(false);
+
+        LimpiarResiduosEscenaTurno();
+
+        turnoCerrado = false;
+        turnoIniciado = false;
+        motivoCierreTurno = string.Empty;
+        palletsEnColaWMS = 0;
+        palletsCompletadosTurno = 0;
+        flotaEscaladaDual = false;
+        indicePedidoActual = 0;
+        indiceFilaManifiestoGlobal = 0;
+        relevo24_7Activo = false;
+        tiempoProximoDespachoPermitido = 0f;
+        amrEnAlertaBateria20 = null;
+        robotEjecutor = robotAMR_01;
+        ReiniciarContadoresIncidentesTurno();
+        RelojSimuladorTurno.ReiniciarRelojTurno(0.0f);
+        RobotAMR.LimpiarEstaticosTrafico();
+
+        manifiestoActual = new Manifiesto { pedidos = new List<Pedido>() };
+        matrizLIFOCamion.Clear();
+        pesoAcumuladoCamion = 0f;
+
+        if (gestorTMS == null) gestorTMS = ModuloDespachoTMS.Instance != null ? ModuloDespachoTMS.Instance : FindFirstObjectByType<ModuloDespachoTMS>();
+        gestorTMS?.ReiniciarEstadoMuelles();
+        dronMantenimiento?.ReiniciarBaseYEstado();
+
+        GestorAudioSCADA audio = GestorAudioSCADA.Instance != null ? GestorAudioSCADA.Instance : FindFirstObjectByType<GestorAudioSCADA>(FindObjectsInactive.Include);
+        audio?.SilenciarAlarmaFabrica();
 
         RobotAMR[] flota = new RobotAMR[] { robotAMR_01, robotAMR_02, robotAMR_03 };
         for (int i = 0; i < flota.Length; i++)
         {
             RobotAMR r = flota[i];
-            if (r != null && r.EsRecuperableEnTurno && r.estadoActual != RobotAMR.EstadoRobot.Recargando && r.estadoActual != RobotAMR.EstadoRobot.Apagado)
+            if (r != null)
             {
-                r.EnviarACargaInductiva(ObtenerPosicionPadPorUnidad(r));
+                r.ReiniciarEstadoUnidadTurno(ObtenerPosicionPadPorUnidad(r));
             }
         }
 
-        DirectorCinematico.Instance?.ActivarVistaGeneralFinDeTurno();
-        NotificarCambioEstadoAdmisionJSON();
+        DashboardUI.Instance?.LimpiarUIAlReiniciarTurno();
+        IniciarTurno();
+        OnTurnoReiniciado?.Invoke();
+    }
+
+    private void LimpiarResiduosEscenaTurno()
+    {
+        while (colaPalletsEnPasillo.Count > 0)
+        {
+            RobotAMR.PalletEnPasillo p = colaPalletsEnPasillo.Dequeue();
+            if (p != null)
+            {
+                if (p.stockOcultadoOriginal != null)
+                {
+                    p.stockOcultadoOriginal.SetActive(true);
+                }
+                if (p.palletGO != null)
+                {
+                    if (Application.isPlaying) Destroy(p.palletGO);
+                    else DestroyImmediate(p.palletGO);
+                }
+            }
+        }
+
+        for (int i = 0; i < palletsEntregados.Count; i++)
+        {
+            if (palletsEntregados[i] != null)
+            {
+                if (Application.isPlaying) Destroy(palletsEntregados[i]);
+                else DestroyImmediate(palletsEntregados[i]);
+            }
+        }
+        palletsEntregados.Clear();
+
+        foreach (var kvp in directorioBodega)
+        {
+            if (kvp.Value == null) continue;
+            Transform stock = kvp.Value.Find("Pallet_Stock");
+            if (stock != null && !stock.gameObject.activeSelf)
+            {
+                stock.gameObject.SetActive(true);
+            }
+        }
+
+        if (obstaculoPasilloISO != null && obstaculoPasilloISO.activeSelf)
+        {
+            obstaculoPasilloISO.transform.SetParent(null, true);
+            obstaculoPasilloISO.SetActive(false);
+        }
     }
 
     private int ContarMisionesEnVuelo()
@@ -559,7 +809,7 @@ public class RobotManagerEVE : MonoBehaviour
 
     private void DespacharColaDisponible(RobotAMR robotPreferido = null)
     {
-        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica) return;
+        if (turnoCerrado || operacionDetenidaPorSeguridad || turnoEnFaseCritica) return;
         if (palletsEnColaWMS <= 0) return;
         if (colaPalletsEnPasillo.Count == 0 && colaPrioritariaReasignacion.Count == 0 &&
             (plantillaPedidosFisicos == null || plantillaPedidosFisicos.Count == 0))
@@ -599,7 +849,7 @@ public class RobotManagerEVE : MonoBehaviour
             yield return null;
         }
         rutinaHeadwayDespacho = null;
-        if (!operacionDetenidaPorSeguridad && !turnoEnFaseCritica && palletsEnColaWMS > 0)
+        if (!turnoCerrado && !operacionDetenidaPorSeguridad && !turnoEnFaseCritica && palletsEnColaWMS > 0)
         {
             DespacharColaDisponible();
         }
@@ -658,7 +908,7 @@ public class RobotManagerEVE : MonoBehaviour
 
     private bool DespacharPedidoARobot(RobotAMR robot)
     {
-        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica) return false;
+        if (turnoCerrado || operacionDetenidaPorSeguridad || turnoEnFaseCritica) return false;
         if (robot == null || !robot.EsRecuperableEnTurno || robot.estadoActual != RobotAMR.EstadoRobot.Inactivo) return false;
 
         if (colaPalletsEnPasillo.Count > 0)
@@ -723,7 +973,7 @@ public class RobotManagerEVE : MonoBehaviour
 
     private bool DespacharRecoleccionPalletEnPasillo(RobotAMR robot, RobotAMR.PalletEnPasillo paquete)
     {
-        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica) return false;
+        if (turnoCerrado || operacionDetenidaPorSeguridad || turnoEnFaseCritica) return false;
         if (robot == null || paquete == null || paquete.pedido == null) return false;
         if (!robot.EsRecuperableEnTurno || robot.estadoActual != RobotAMR.EstadoRobot.Inactivo) return false;
 
@@ -759,7 +1009,7 @@ public class RobotManagerEVE : MonoBehaviour
 
     private bool DespacharPedidoEspecificoARobot(RobotAMR robot, Pedido pedido)
     {
-        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica) return false;
+        if (turnoCerrado || operacionDetenidaPorSeguridad || turnoEnFaseCritica) return false;
         if (robot == null || pedido == null || !robot.EsRecuperableEnTurno) return false;
         if (robot.estadoActual != RobotAMR.EstadoRobot.Inactivo) return false;
 
@@ -1240,7 +1490,7 @@ public class RobotManagerEVE : MonoBehaviour
 
     public void NotificarRetiroACargaPostEntrega(RobotAMR robotRetirado)
     {
-        if (!operacionDetenidaPorSeguridad && !turnoEnFaseCritica && palletsEnColaWMS > 0)
+        if (!turnoCerrado && !operacionDetenidaPorSeguridad && !turnoEnFaseCritica && palletsEnColaWMS > 0)
         {
             DespacharColaDisponible();
         }
@@ -1250,6 +1500,7 @@ public class RobotManagerEVE : MonoBehaviour
             DashboardUI.Instance?.ConfigurarReservaAMR02(false);
             DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(false);
             DashboardUI.Instance?.RegistrarLog("<color=green>[WMS]:</color> Cola WMS completada. Unidades en espera de nuevas órdenes ERP.");
+            EvaluarCierreTurnoSiCorresponde();
         }
     }
 
@@ -1491,7 +1742,7 @@ public class RobotManagerEVE : MonoBehaviour
         DashboardUI.Instance?.RegistrarLog($"<color=#EF4444><b>{msgCritico}</b></color>");
         GestorAudioSCADA.Instance?.ActivarAlarmaSonoraFabrica(msgCritico);
         DashboardUI.Instance?.MostrarAlertaFaseCriticaSupervisor(motivoFaseCritica, contadorDescargasCriticasTurno, contadorFallasHardwareTurno);
-        NotificarCambioEstadoAdmisionJSON();
+        CerrarTurnoPorEVE(motivoFaseCritica, mantenerModalFaseCritica: true);
     }
 
     public bool SolicitarAutorizacionReincorporacion(RobotAMR amr)
@@ -1594,6 +1845,7 @@ public class RobotManagerEVE : MonoBehaviour
                 DashboardUI.Instance?.ConfigurarReservaAMR02(false);
                 DashboardUI.Instance?.ConfigurarEstadoSoporteAMR03(false);
                 DashboardUI.Instance?.RegistrarLog("<color=green>[WMS]:</color> Cola WMS completada. Unidades en espera de nuevas órdenes ERP.");
+                EvaluarCierreTurnoSiCorresponde();
             }
         }
 
@@ -2524,10 +2776,12 @@ public class RobotManagerEVE : MonoBehaviour
                               (TieneFlotaAsignadaEnEscena() && TotalIncidentesCriticosTurno > 0 &&
                                (contadorFallasHardwareTurno > 0 || !HayUnidadSoporteDisponible()));
 
-        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica)
+        if (turnoCerrado || operacionDetenidaPorSeguridad || turnoEnFaseCritica)
         {
             bloqueoAdmision = true;
-            motivoBloqueo = !string.IsNullOrEmpty(motivoFaseCritica) ? motivoFaseCritica : "Cierre total de turno (0 AMRs operativos).";
+            motivoBloqueo = turnoCerrado && !string.IsNullOrEmpty(motivoCierreTurno)
+                ? motivoCierreTurno
+                : (!string.IsNullOrEmpty(motivoFaseCritica) ? motivoFaseCritica : "Cierre total de turno (0 AMRs operativos).");
             return 0;
         }
 
@@ -2561,7 +2815,7 @@ public class RobotManagerEVE : MonoBehaviour
     {
         float pesoAplicado = pesoKg > 0f ? pesoKg : Pedido.PesoReferenciaBaseKg;
         float vIda = VelocidadNominalFlota;
-        float vCarga = Mathf.Max(0.5f, vIda - (pesoAplicado * 0.002f));
+        float vCarga = Mathf.Max(0.35f, vIda - (pesoAplicado * RobotAMR.CoeficientePesoNominal));
         return (DistanciaCicloReferenciaTramoM / vIda) + (DistanciaCicloReferenciaTramoM / vCarga) + TiempoManiobraReferenciaSeg;
     }
 
@@ -2731,10 +2985,10 @@ public class RobotManagerEVE : MonoBehaviour
             return;
         }
 
-        if (operacionDetenidaPorSeguridad || turnoEnFaseCritica)
+        if (turnoCerrado || operacionDetenidaPorSeguridad || turnoEnFaseCritica)
         {
             GestorAudioSCADA.Instance?.ReproducirBloqueoIngestaJSON();
-            DashboardUI.Instance?.RegistrarLog("<color=#EF4444>[INGESTA BLOQUEADA]:</color> Cierre total de turno (0 AMRs operativos). Detalle en Buzón.");
+            DashboardUI.Instance?.RegistrarLog("<color=#EF4444>[INGESTA BLOQUEADA]:</color> Turno cerrado o detenido. Pulse Reiniciar Turno para operar nuevamente.");
             DashboardUI.Instance?.MostrarPopUpExcedeCapacidadActual(0, 0, "Admisión bloqueada");
             NotificarCambioEstadoAdmisionJSON();
             return;
